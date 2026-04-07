@@ -3,6 +3,7 @@ import { z } from 'zod';
 import * as authService from '../services/authService.js';
 import { saveFcmToken } from '../services/fcmService.js';
 import { signAccessToken, authenticate } from '../middleware/auth.js';
+import { query } from '../config/database.js';
 
 // 입력 유효성 검사 스키마
 const registerSchema = z.object({
@@ -141,5 +142,21 @@ export default async function authRoutes(fastify) {
 
     await saveFcmToken(request.user.id, parsed.data.fcm_token);
     return reply.send({ message: 'FCM token registered' });
+  });
+
+  // ── PATCH /auth/fcm-token ─────────────────────────────────────────────────
+  // FCM 토큰 갱신 (Flutter onTokenRefresh 콜백에서 호출)
+  fastify.patch('/fcm-token', { preHandler: [authenticate] }, async (request, reply) => {
+    const { token } = request.body ?? {};
+    if (!token || typeof token !== 'string' || token.trim() === '') {
+      return reply.code(400).send({ error: 'VALIDATION_ERROR' });
+    }
+
+    await query(
+      'UPDATE users SET fcm_token = $1 WHERE id = $2',
+      [token.trim(), request.user.id]
+    );
+
+    return reply.send({ updated: true });
   });
 }

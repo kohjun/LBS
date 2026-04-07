@@ -173,23 +173,9 @@ class SessionRepository {
   Future<Session> getSession(String id) async {
     try {
       final res = await _api.get('/sessions/$id');
-      // res.data가 null이거나 Map이 아닐 경우를 방어
       final data = res.data as Map<String, dynamic>?;
-      final rawMembers = data?['members'] as List<dynamic>? ?? [];
-      final members = rawMembers
-          .whereType<Map<String, dynamic>>()
-          .map(SessionMember.fromMap)
-          .toList();
-      return Session(
-        id:          id,
-        name:        '',
-        code:        '',
-        isHost:      false,
-        memberCount: members.length,
-        members:     members,
-        createdAt:   DateTime.now(),
-        expiresAt:   null,
-      );
+      final sessionMap = (data?['session'] as Map<String, dynamic>?) ?? data ?? {};
+      return Session.fromMap(sessionMap);
     } catch (e) {
       debugPrint('[SessionRepository] getSession($id) error: $e');
       return Session(

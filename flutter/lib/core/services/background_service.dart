@@ -3,6 +3,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
+import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -71,6 +72,7 @@ void onStart(ServiceInstance service) async {
   final prefs = await SharedPreferences.getInstance();
   final token = prefs.getString('bg_token');
   final sessionId = prefs.getString('bg_session_id');
+  final serverUrl = prefs.getString('bg_server_url') ?? 'http://10.0.2.2:3000';
 
   if (token == null || sessionId == null) {
     service.stopSelf();
@@ -83,12 +85,13 @@ void onStart(ServiceInstance service) async {
   Timer? idleTimer;
   bool isIdle = false;
   final Set<String> insideGeofences = {};
+  final battery = Battery();
 
   // 1. 소켓 연결 함수
   void connectSocket() {
     if (socket?.connected == true) return;
     socket = io.io(
-      'http://10.0.2.2:3000',
+      serverUrl,
       io.OptionBuilder()
           .setTransports(['websocket'])
           .setExtraHeaders({'Authorization': 'Bearer $token'})
@@ -137,24 +140,35 @@ void onStart(ServiceInstance service) async {
       // 1. 정지 타이머 초기화 (움직임 감지)
       resetIdleTimer();
 
-      // 2. 만약 절전 모드였다면 고정밀 모드로 자동 복귀
+      // 2. 절전 모드 해제: 현재 리스너가 끝난 뒤 startTracking 호출
       if (isIdle) {
         debugPrint('[Background] 이동 감지! 절전 모드 해제');
         connectSocket();
-        startTracking(idle: false);
+        Future.microtask(() => startTracking(idle: false));
+        return;
       }
 
-      // 3. 소켓 전송
+      // 3. 배터리 레벨 읽기
+      int? batteryLevel;
+      try {
+        batteryLevel = await battery.batteryLevel;
+      } catch (_) {}
+
+      // 4. 소켓 전송
       if (socket?.connected == true) {
         socket!.emit('location:update', {
           'sessionId': sessionId,
-          'lat': pos.latitude,
-          'lng': pos.longitude,
-          'status': isIdle ? 'stopped' : 'moving',
+          'lat':       pos.latitude,
+          'lng':       pos.longitude,
+          'accuracy':  pos.accuracy,
+          'speed':     pos.speed.isNaN ? null : pos.speed,
+          'heading':   pos.heading.isNaN ? null : pos.heading,
+          'battery':   batteryLevel,
+          'status':    'moving',
         });
       }
 
-      // 4. 지오펜스 판정
+      // 5. 지오펜스 판정
       _checkGeofencesInBg(pos, sessionId, prefs, insideGeofences);
     });
   };

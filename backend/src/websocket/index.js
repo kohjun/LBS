@@ -176,9 +176,9 @@ export const createSocketServer = (httpServer) => {
           status: status || 'moving',
         });
 
-        // 근접 거리 계산용 컴팩트 위치 캐시 (5분 TTL)
+        // 근접 거리 계산용 컴팩트 위치 캐시 (5분 TTL) — 별도 키로 메인 캐시 TTL 보호
         await redisClient.set(
-          `location:${sessionId}:${userId}`,
+          `prox:${sessionId}:${userId}`,
           JSON.stringify({ lat, lng }),
           { EX: 300 }
         );
@@ -253,10 +253,12 @@ export const createSocketServer = (httpServer) => {
             return socket.emit(EVENTS.MODULE_ERROR, { code: 'MISSING_FIELDS' });
           }
 
-          // 두 유저의 최신 위치 조회: compact JSON 우선, 없으면 Hash 폴백
+          // 두 유저의 최신 위치 조회: prox 캐시 → 메인 캐시 → Hash 폴백
           const resolveLocation = async (uid) => {
-            const raw = await redisClient.get(`location:${sessionId}:${uid}`);
-            if (raw) return JSON.parse(raw);
+            const prox = await redisClient.get(`prox:${sessionId}:${uid}`);
+            if (prox) return JSON.parse(prox);
+            const main = await redisClient.get(`location:${sessionId}:${uid}`);
+            if (main) return JSON.parse(main);
             const hash = await redisClient.hGetAll(`session:${sessionId}:user:${uid}:state`);
             if (hash && hash.lat && hash.lng) {
               return { lat: parseFloat(hash.lat), lng: parseFloat(hash.lng) };

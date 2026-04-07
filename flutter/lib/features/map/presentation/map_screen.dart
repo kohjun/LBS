@@ -540,7 +540,8 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
     // 6. 백그라운드 서비스용 데이터 저장 및 시작
     try {
       await prefs.setString('bg_session_id', _sessionId);
-      final token = await ApiClient().getAccessToken(); 
+      await prefs.setString('bg_server_url', 'http://10.0.2.2:3000');
+      final token = await ApiClient().getAccessToken();
       if (token != null) {
         await prefs.setString('bg_token', token);
       }

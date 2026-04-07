@@ -1,6 +1,7 @@
 // lib/core/services/location_service.dart
 
 import 'dart:async';
+import 'dart:io';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
@@ -48,6 +49,7 @@ class GpsLocationService {
   bool _isTracking = false;
   bool _isMoving = false;
   bool _sharingEnabled = true;
+  String? _sessionId;
 
   final _battery = Battery();
   Timer? _statusTimer;
@@ -76,6 +78,13 @@ class GpsLocationService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // 세션 ID 설정
+  // ─────────────────────────────────────────────────────────────────────────
+  void setSessionId(String sessionId) {
+    _sessionId = sessionId;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // 위치 추적 시작
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> startTracking() async {
@@ -86,11 +95,9 @@ class GpsLocationService {
 
     _isTracking = true;
 
-    // 플랫폼별 설정
-    const locationSettings = LocationSettings(
-      accuracy: LocationAccuracy.high,
-      distanceFilter: 5,
-    );
+    final locationSettings = Platform.isAndroid
+        ? LocationConfig.androidMoving
+        : LocationConfig.iosSettings;
 
     _positionSub = Geolocator.getPositionStream(
       locationSettings: locationSettings,
@@ -137,25 +144,29 @@ class GpsLocationService {
   // Socket으로 위치 전송
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> _sendToSocket(Position position) async {
-    if (!_sharingEnabled) return; // 공유 OFF 시 전송 중단
-    // int? batteryLevel;
-    // try {
-    //   batteryLevel = await _battery.batteryLevel;
-    // } catch (_) {}
+    if (!_sharingEnabled) return;
+    final sessionId = _sessionId;
+    if (sessionId == null) return;
 
-    // final status = _isMoving ? 'moving' : 'stopped';
+    int? batteryLevel;
+    try {
+      batteryLevel = await _battery.batteryLevel;
+    } catch (_) {}
 
-    // SocketService().sendLocation(
-    //   lat:      position.latitude,
-    //   lng:      position.longitude,
-    //   accuracy: position.accuracy,
-    //   altitude: position.altitude,
-    //   speed:    position.speed.isNaN ? null : position.speed,
-    //   heading:  position.heading.isNaN ? null : position.heading,
-    //   source:   'gps',
-    //   battery:  batteryLevel,
-    //   status:   status,
-    // );
+    final status = _isMoving ? 'moving' : 'stopped';
+
+    SocketService().sendLocationWithSession(
+      sessionId: sessionId,
+      lat:       position.latitude,
+      lng:       position.longitude,
+      accuracy:  position.accuracy,
+      altitude:  position.altitude,
+      speed:     position.speed.isNaN ? null : position.speed,
+      heading:   position.heading.isNaN ? null : position.heading,
+      source:    'gps',
+      battery:   batteryLevel,
+      status:    status,
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────────

@@ -294,6 +294,35 @@ class SocketService {
     });
   }
 
+  // 세션 ID를 명시적으로 전달하는 위치 전송 (location_service 전용)
+  void sendLocationWithSession({
+    required String sessionId,
+    required double lat,
+    required double lng,
+    double? accuracy,
+    double? altitude,
+    double? speed,
+    double? heading,
+    String source = 'gps',
+    int? battery,
+    String status = 'moving',
+  }) {
+    if (!_isConnected) return;
+
+    _socket?.emit(SocketEvents.locationUpdate, {
+      'sessionId': sessionId,
+      'lat':       lat,
+      'lng':       lng,
+      'accuracy':  accuracy,
+      'altitude':  altitude,
+      'speed':     speed,
+      'heading':   heading,
+      'source':    source,
+      'battery':   battery,
+      'status':    status,
+    });
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // SOS 발송
   // ─────────────────────────────────────────────────────────────────────────
