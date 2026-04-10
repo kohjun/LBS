@@ -29,16 +29,39 @@ const generateSessionCode = async () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // 세션 생성
 // ─────────────────────────────────────────────────────────────────────────────
-export const createSession = async (hostUserId, { name, activeModules = [] }) => {
+export const createSession = async (hostUserId, {
+  name,
+  activeModules   = [],
+  gameType,
+  impostorCount,
+  killCooldown,
+  discussionTime,
+  voteTime,
+  missionPerCrew,
+} = {}) => {
   const code = await generateSessionCode();
 
   const rows = await withTransaction(async (client) => {
-    // 세션 생성
+    // 세션 생성 (게임 설정 컬럼 포함)
     const session = await client.query(
-      `INSERT INTO sessions (host_user_id, session_code, name, active_modules)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, session_code, name, status, created_at, expires_at, active_modules, module_configs`,
-      [hostUserId, code, name || null, activeModules]
+      `INSERT INTO sessions
+         (host_user_id, session_code, name, active_modules,
+          game_type, impostor_count, kill_cooldown, discussion_time, vote_time, mission_per_crew)
+       VALUES ($1, $2, $3, $4,
+               COALESCE($5, 'among_us'), COALESCE($6, 1), COALESCE($7, 30),
+               COALESCE($8, 90), COALESCE($9, 30), COALESCE($10, 3))
+       RETURNING id, session_code, name, status, created_at, expires_at,
+                 active_modules, module_configs,
+                 game_type, impostor_count, kill_cooldown, discussion_time, vote_time, mission_per_crew`,
+      [
+        hostUserId, code, name || null, activeModules,
+        gameType      ?? null,
+        impostorCount ?? null,
+        killCooldown  ?? null,
+        discussionTime ?? null,
+        voteTime      ?? null,
+        missionPerCrew ?? null,
+      ]
     );
     const sessionId = session.rows[0].id;
 

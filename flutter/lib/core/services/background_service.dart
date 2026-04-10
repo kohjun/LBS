@@ -90,14 +90,22 @@ void onStart(ServiceInstance service) async {
   final battery = Battery();
   String currentToken = token;
 
-  // 토큰 갱신: /auth/refresh 호출 → 새 accessToken 저장
+  // 토큰 갱신: /auth/refresh 호출 → 새 accessToken·refreshToken 저장
   Future<bool> refreshAccessToken() async {
     try {
       final uri = Uri.parse('$serverUrl/auth/refresh');
       final client = HttpClient();
-      // 백엔드는 POST /auth/refresh 를 사용한다
       final req = await client.postUrl(uri);
       req.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
+
+      // 저장된 refresh_token이 있으면 body에 실어 전송 (쿠키 없는 환경 대응)
+      final storedRefreshToken = prefs.getString('bg_refresh_token');
+      if (storedRefreshToken != null) {
+        final bodyBytes = utf8.encode(jsonEncode({'refreshToken': storedRefreshToken}));
+        req.headers.set(HttpHeaders.contentLengthHeader, bodyBytes.length);
+        req.add(bodyBytes);
+      }
+
       final resp = await req.close();
       if (resp.statusCode != 200) {
         client.close(force: true);
@@ -106,10 +114,16 @@ void onStart(ServiceInstance service) async {
       final body = await resp.transform(utf8.decoder).join();
       client.close(force: true);
       final Map<String, dynamic> data = jsonDecode(body) as Map<String, dynamic>;
-      final newAccessToken = data['accessToken'] as String?;
+
+      final newAccessToken  = data['accessToken']  as String?;
+      final newRefreshToken = data['refreshToken'] as String?;
       if (newAccessToken == null) return false;
+
       await prefs.setString('bg_token', newAccessToken);
       currentToken = newAccessToken;
+      if (newRefreshToken != null) {
+        await prefs.setString('bg_refresh_token', newRefreshToken);
+      }
       return true;
     } catch (e) {
       debugPrint('[Background] 토큰 갱신 실패: $e');

@@ -76,8 +76,14 @@ class ApiClient {
   // ─────────────────────────────────────────────────────────────────────────
   // 토큰 관리
   // ─────────────────────────────────────────────────────────────────────────
-  Future<void> saveTokens({required String accessToken}) async {
+  Future<void> saveTokens({
+    required String accessToken,
+    String? refreshToken,
+  }) async {
     await _storage.write(key: 'access_token', value: accessToken);
+    if (refreshToken != null) {
+      await _storage.write(key: 'refresh_token', value: refreshToken);
+    }
   }
 
   Future<void> clearTokens() async {
@@ -87,13 +93,20 @@ class ApiClient {
   Future<String?> getAccessToken() => _storage.read(key: 'access_token');
 
   // Refresh Token으로 Access Token 갱신
-  // Refresh Token은 HttpOnly 쿠키로 서버가 관리 → 클라이언트는 /auth/refresh만 호출
+  // 저장된 refresh_token을 body에 실어 전송 → 쿠키 없는 환경(백그라운드)도 지원
   Future<void> _refreshAccessToken() async {
-    // withCredentials: true → 쿠키 자동 전송
-    final response = await Dio(BaseOptions(baseUrl: kApiBaseUrl))
-        .post('/auth/refresh', options: Options(extra: {'withCredentials': true}));
+    final storedRefreshToken = await _storage.read(key: 'refresh_token');
 
-    final newAccessToken = response.data['accessToken'] as String;
-    await saveTokens(accessToken: newAccessToken);
+    final response = await Dio(BaseOptions(baseUrl: kApiBaseUrl)).post(
+      '/auth/refresh',
+      data: storedRefreshToken != null
+          ? {'refreshToken': storedRefreshToken}
+          : null,
+      options: Options(extra: {'withCredentials': true}),
+    );
+
+    final newAccessToken  = response.data['accessToken']  as String;
+    final newRefreshToken = response.data['refreshToken'] as String?;
+    await saveTokens(accessToken: newAccessToken, refreshToken: newRefreshToken);
   }
 }

@@ -81,7 +81,9 @@ export default async function authRoutes(fastify) {
   // ── POST /auth/refresh ───────────────────────────────────────────────────
   // 만료된 Access Token 갱신 (쿠키의 Refresh Token 사용)
   fastify.post('/refresh', async (request, reply) => {
-    const rawRefreshToken = request.cookies?.refreshToken;
+    // 쿠키 또는 body 양쪽에서 읽음 (모바일 백그라운드 서비스 지원)
+    const rawRefreshToken =
+      request.cookies?.refreshToken || request.body?.refreshToken;
     if (!rawRefreshToken) {
       return reply.code(401).send({ error: 'MISSING_REFRESH_TOKEN' });
     }
@@ -99,7 +101,17 @@ export default async function authRoutes(fastify) {
         path: '/auth',
       });
 
-      return reply.send({ accessToken, user });
+      // body에도 포함 (Flutter 백그라운드 서비스에서 쿠키 없이 저장 가능하도록)
+      return reply.send({
+        accessToken,
+        refreshToken: newRefreshToken,
+        user: {
+          id:         user.id,
+          email:      user.email,
+          nickname:   user.nickname,
+          avatar_url: user.avatar_url,
+        },
+      });
     } catch (err) {
       const errorMap = {
         INVALID_REFRESH_TOKEN: 401,

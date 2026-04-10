@@ -6,8 +6,17 @@ import * as locationService from '../services/locationService.js';
 import { getIo, EVENTS } from '../websocket/index.js';
 
 const createSessionSchema = z.object({
-  name: z.string().max(100).optional(),
-  activeModules: z.array(z.string()).max(5).optional(),
+  name:          z.string().max(100).optional(),
+  activeModules: z.array(z.string()).max(10).optional(),
+  durationHours: z.number().min(1).max(72).optional(),
+  maxMembers:    z.number().min(2).max(50).optional(),
+  gameType:      z.string().optional(),
+  // 게임별 설정
+  impostorCount:  z.number().min(1).max(3).optional(),
+  killCooldown:   z.number().min(10).max(60).optional(),
+  discussionTime: z.number().min(30).max(180).optional(),
+  voteTime:       z.number().min(15).max(60).optional(),
+  missionPerCrew: z.number().min(1).max(5).optional(),
 });
 
 export default async function sessionRoutes(fastify) {
@@ -40,6 +49,20 @@ export default async function sessionRoutes(fastify) {
 
     const session = await sessionService.createSession(request.user.id, parsed.data);
     return reply.code(201).send({ session });
+  });
+
+  // ── POST /sessions/:sessionId/end ────────────────────────────────────────
+  // 세션 종료 (POST 방식, 호스트만) — DELETE와 동일 기능, 클라이언트 호환성 추가
+  fastify.post('/:sessionId/end', async (request, reply) => {
+    try {
+      await sessionService.endSession(request.user.id, request.params.sessionId);
+      return reply.send({ message: 'Session ended' });
+    } catch (err) {
+      if (err.message === 'SESSION_NOT_FOUND_OR_NOT_HOST') {
+        return reply.code(403).send({ error: err.message });
+      }
+      throw err;
+    }
   });
 
   // ── POST /sessions/join ──────────────────────────────────────────────────
@@ -84,7 +107,15 @@ export default async function sessionRoutes(fastify) {
       return reply.code(403).send({ error: 'NOT_A_MEMBER' });
     }
 
-    return reply.send({ members });
+    // 세션 기본 정보도 함께 반환
+    const session = await sessionService.getSession(sessionId);
+    return reply.send({
+      session: {
+        ...session,
+        members,
+      },
+      members, // 하위 호환성 유지
+    });
   });
 
   // ── DELETE /sessions/:sessionId ──────────────────────────────────────────
