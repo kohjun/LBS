@@ -51,7 +51,6 @@ class MapOverlayLayer extends StatelessWidget {
     required this.activeModules,
     required this.authUserId,
     required this.onKillAction,
-    required this.onStartGame,
     required this.onOpenVote,
     required this.onCloseFinished,
     required this.onSendEmergency,
@@ -62,7 +61,6 @@ class MapOverlayLayer extends StatelessWidget {
   final Set<String> activeModules;
   final String? authUserId;
   final VoidCallback onKillAction;
-  final VoidCallback onStartGame;
   final VoidCallback onOpenVote;
   final VoidCallback onCloseFinished;
   final VoidCallback onSendEmergency;
@@ -127,30 +125,6 @@ class MapOverlayLayer extends StatelessWidget {
                   ),
                 ),
                 onPressed: onKillAction,
-              ),
-            ),
-          ),
-        if (mapState.myRole == 'host' &&
-            mapState.gameState.status == 'none' &&
-            activeModules.contains('proximity'))
-          Positioned(
-            top: 80,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.green,
-                  foregroundColor: Colors.white,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
-                  textStyle: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                onPressed: onStartGame,
-                child: const Text('게임 시작'),
               ),
             ),
           ),

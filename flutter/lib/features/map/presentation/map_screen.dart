@@ -622,13 +622,13 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     ref.listen<am_game.AmongUsGameState>(
       gameProvider(widget.sessionId),
       (prev, next) {
-        if (next.gameOverWinner != null && prev?.gameOverWinner == null) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              context.go(
-                  '/game/${widget.sessionId}/result/${next.gameOverWinner}');
-            }
-          });
+        if (prev?.shouldNavigateToRole != true && next.shouldNavigateToRole) {
+          context.push('/game/${widget.sessionId}/role');
+          ref.read(gameProvider(widget.sessionId).notifier).resetRoleNavigation();
+        }
+
+        if (prev?.gameOverWinner == null && next.gameOverWinner != null) {
+          context.go('/game/${widget.sessionId}/result/${next.gameOverWinner}');
         }
       },
     );
@@ -636,6 +636,16 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     final mapState  = ref.watch(mapSessionProvider(widget.sessionId));
     final authUser  = ref.watch(authProvider).valueOrNull;
     final amgState  = ref.watch(gameProvider(widget.sessionId));
+    final completed =
+        (amgState.missionProgress['completed'] as num?)?.toInt() ?? 0;
+    final total = (amgState.missionProgress['total'] as num?)?.toInt() ?? 0;
+    final rawPercent =
+        (amgState.missionProgress['percent'] as num?)?.toDouble() ??
+        (total > 0 ? completed / total : 0);
+    final progressValue =
+        ((rawPercent > 1 ? rawPercent / 100 : rawPercent).clamp(0.0, 1.0) as num)
+            .toDouble();
+    final percentLabel = (progressValue * 100).round();
 
     // 활성 모듈 목록 (세션 캐시에서 조회)
     final activeModules = getSessionModules(ref).toSet();
@@ -753,9 +763,6 @@ class _MapScreenState extends ConsumerState<MapScreen> {
             onKillAction: () => ref
                 .read(mapSessionProvider(widget.sessionId).notifier)
                 .sendKillAction(mapState.proximateTargetId!),
-            onStartGame: () => ref
-                .read(mapSessionProvider(widget.sessionId).notifier)
-                .startGame(),
             onOpenVote: () => ref
                 .read(mapSessionProvider(widget.sessionId).notifier)
                 .openVote(),
@@ -764,6 +771,70 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                 .read(gameProvider(widget.sessionId).notifier)
                 .sendEmergency(),
           ),
+
+          if (amgState.isStarted)
+            Positioned(
+              top: 96,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  width: MediaQuery.sizeOf(context).width * 0.6,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.55),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        '미션 진행도 $completed / $total ($percentLabel%)',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(999),
+                        child: LinearProgressIndicator(
+                          value: progressValue,
+                          minHeight: 8,
+                          backgroundColor: Colors.white24,
+                          valueColor:
+                              const AlwaysStoppedAnimation<Color>(Colors.green),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+          if (mapState.myRole == 'host' &&
+              mapState.gameState.status == 'none' &&
+              !amgState.isStarted)
+            Positioned(
+              right: 16,
+              bottom: 120,
+              child: FloatingActionButton.extended(
+                heroTag: 'start_game',
+                backgroundColor: Colors.green,
+                foregroundColor: Colors.white,
+                onPressed: () => ref
+                    .read(gameProvider(widget.sessionId).notifier)
+                    .startGame(),
+                icon: const Icon(Icons.play_arrow),
+                label: const Text(
+                  '게임 시작',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
 
           if (amgState.isStarted)
             Positioned(

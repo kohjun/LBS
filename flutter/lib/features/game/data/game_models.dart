@@ -102,6 +102,7 @@ class AmongUsGameState {
   final bool isStarted;
   final GameRole? myRole;
   final List<GameMission> missions;
+  final Map<String, dynamic> missionProgress;
   final List<ChatLog> chatLogs;
   final String meetingPhase; // 'none' | 'discussion' | 'voting' | 'result'
   final int meetingRemaining;
@@ -111,11 +112,17 @@ class AmongUsGameState {
   final String? gameOverWinner; // 'crew' | 'impostor'
   final bool isAlive;
   final int preVoteCount;
+  final bool shouldNavigateToRole;
 
   const AmongUsGameState({
     this.isStarted        = false,
     this.myRole,
     this.missions         = const [],
+    this.missionProgress  = const {
+      'completed': 0,
+      'total': 0,
+      'percent': 0,
+    },
     this.chatLogs         = const [],
     this.meetingPhase     = 'none',
     this.meetingRemaining = 0,
@@ -125,12 +132,14 @@ class AmongUsGameState {
     this.gameOverWinner,
     this.isAlive          = true,
     this.preVoteCount     = 0,
+    this.shouldNavigateToRole = false,
   });
 
   AmongUsGameState copyWith({
     bool? isStarted,
     GameRole? myRole,
     List<GameMission>? missions,
+    Map<String, dynamic>? missionProgress,
     List<ChatLog>? chatLogs,
     String? meetingPhase,
     int? meetingRemaining,
@@ -140,11 +149,13 @@ class AmongUsGameState {
     String? gameOverWinner,
     bool? isAlive,
     int? preVoteCount,
+    bool? shouldNavigateToRole,
   }) =>
       AmongUsGameState(
         isStarted:        isStarted        ?? this.isStarted,
         myRole:           myRole           ?? this.myRole,
         missions:         missions         ?? this.missions,
+        missionProgress:  missionProgress  ?? this.missionProgress,
         chatLogs:         chatLogs         ?? this.chatLogs,
         meetingPhase:     meetingPhase     ?? this.meetingPhase,
         meetingRemaining: meetingRemaining ?? this.meetingRemaining,
@@ -154,5 +165,7 @@ class AmongUsGameState {
         gameOverWinner:   gameOverWinner   ?? this.gameOverWinner,
         isAlive:          isAlive          ?? this.isAlive,
         preVoteCount:     preVoteCount     ?? this.preVoteCount,
+        shouldNavigateToRole:
+            shouldNavigateToRole ?? this.shouldNavigateToRole,
       );
 }
