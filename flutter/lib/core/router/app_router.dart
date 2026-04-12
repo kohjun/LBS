@@ -15,12 +15,15 @@ import '../../features/settings/presentation/settings_screen.dart';
 import '../../features/session/presentation/member_management_screen.dart';
 import '../../features/game/presentation/game_role_screen.dart';
 import '../../features/game/presentation/game_result_screen.dart';
+import '../../features/lobby/presentation/lobby_screen.dart';
+import '../../features/home/data/session_repository.dart';
 
 // 라우트 경로 상수
 abstract class AppRoutes {
   static const login    = '/login';
   static const register = '/register';
   static const home     = '/';
+  static const lobby    = '/lobby/:sessionId';
   static const map      = '/map/:sessionId';
   static const history  = '/history/:sessionId';
   static const geofence = '/geofence/:sessionId';
@@ -58,6 +61,22 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: AppRoutes.home,
         builder: (context, state) => const HomeScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.lobby,
+        builder: (context, state) {
+          final sessionId = state.pathParameters['sessionId']!;
+          final sessionTypeStr =
+              state.uri.queryParameters['sessionType'] ?? 'defaultType';
+          final sessionType = SessionType.values.firstWhere(
+            (t) => t.name == sessionTypeStr,
+            orElse: () => SessionType.defaultType,
+          );
+          return LobbyScreen(
+            sessionId: sessionId,
+            sessionType: sessionType,
+          );
+        },
       ),
       GoRoute(
         path: AppRoutes.map,

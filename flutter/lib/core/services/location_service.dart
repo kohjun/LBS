@@ -148,7 +148,10 @@ class GpsLocationService {
     int? batteryLevel;
     try {
       batteryLevel = await _battery.batteryLevel;
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[Battery] 배터리 레벨 읽기 실패: $e');
+      batteryLevel = null;  // null로 처리하고 계속 진행
+    }
 
     final status = _isMoving ? 'moving' : 'stopped';
 

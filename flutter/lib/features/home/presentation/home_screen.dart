@@ -89,7 +89,17 @@ class HomeScreen extends ConsumerWidget {
                   separatorBuilder: (_, __) => const SizedBox(height: 12),
                   itemBuilder: (context, index) => _SessionCard(
                     session: sessions[index],
-                    onTap: () => context.push('/map/${sessions[index].id}'),
+                    onTap: () {
+                      final s = sessions[index];
+                      if (s.gameStatus == 'playing') {
+                        // 게임 진행 중인 세션은 맵으로 직접 이동
+                        context.push('/map/${s.id}');
+                      } else {
+                        context.push(
+                          '/lobby/${s.id}?sessionType=${s.sessionType.name}',
+                        );
+                      }
+                    },
                     onLeave: () => _confirmLeave(context, ref, sessions[index]),
                   ),
                 ),
@@ -265,15 +275,17 @@ class HomeScreen extends ConsumerWidget {
                   Navigator.pop(ctx);
 
                   try {
-                    final code = await ref.read(sessionListProvider.notifier).createSession(
+                    final session = await ref.read(sessionListProvider.notifier).createSession(
                       name,
                       durationHours: selectedHours,
                       maxMembers: maxMembers.toInt(),
                       activeModules: selectedType.toModules(),
                     );
-                    
+
                     if (context.mounted) {
-                      _showSessionCodeDialog(context, code);
+                      context.push(
+                        '/lobby/${session.id}?sessionType=${selectedType.name}',
+                      );
                     }
                   } catch (e) {
                     if (context.mounted) {
@@ -288,50 +300,6 @@ class HomeScreen extends ConsumerWidget {
             ],
           );
         },
-      ),
-    );
-  }
-
-  // ── 세션 생성 완료 다이얼로그 (초대 코드 표시) ───────────────────────────
-  void _showSessionCodeDialog(BuildContext context, String code) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('세션 생성 완료'),
-        content: Row(
-          mainAxisSize: MainAxisSize.min,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              code,
-              style: const TextStyle(
-                fontSize: 28,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 4,
-                fontFamily: 'monospace',
-              ),
-            ),
-            IconButton(
-              icon: const Icon(Icons.copy),
-              tooltip: '복사',
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: code));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('복사됨!'),
-                    duration: Duration(seconds: 1),
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-        actions: [
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('확인'),
-          ),
-        ],
       ),
     );
   }
@@ -369,7 +337,12 @@ class HomeScreen extends ConsumerWidget {
               if (code.isEmpty) return;
               Navigator.pop(ctx);
               try {
-                await ref.read(sessionListProvider.notifier).joinSession(code);
+                final session = await ref.read(sessionListProvider.notifier).joinSession(code);
+                if (context.mounted) {
+                  context.push(
+                    '/lobby/${session.id}?sessionType=${session.sessionType.name}',
+                  );
+                }
               } catch (e) {
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -555,6 +528,22 @@ class _SessionCardState extends State<_SessionCard> {
                                       color: Colors.white, fontSize: 11),
                                 ),
                               ),
+                            Container(
+                              margin: const EdgeInsets.only(left: 6),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: session.gameStatus == 'playing'
+                                    ? Colors.green
+                                    : Colors.orange,
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Text(
+                                session.gameStatus == 'playing' ? '진행중' : '대기중',
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 11),
+                              ),
+                            ),
                           ],
                         ),
                         const SizedBox(height: 6),

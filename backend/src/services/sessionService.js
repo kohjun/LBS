@@ -287,6 +287,7 @@ export const getMySessions = async (userId) => {
   const { rows } = await query(
     `SELECT s.id, s.session_code, s.name, s.status,
             s.created_at, s.expires_at, s.active_modules, s.module_configs, s.max_members,
+            s.game_type,
             s.host_user_id = $1 AS is_host,
             (SELECT COUNT(*) FROM session_members sm2
              WHERE sm2.session_id = s.id AND sm2.left_at IS NULL) AS member_count
@@ -296,7 +297,15 @@ export const getMySessions = async (userId) => {
      ORDER BY sm.joined_at DESC`,
     [userId]
   );
-  return rows;
+
+  // game_status: Redis에서 게임 시작 여부 확인
+  const withStatus = await Promise.all(
+    rows.map(async (row) => {
+      const started = await getCache(`game:${row.id}:started`);
+      return { ...row, game_status: started ? 'playing' : 'lobby' };
+    })
+  );
+  return withStatus;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

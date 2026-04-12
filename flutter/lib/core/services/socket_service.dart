@@ -84,6 +84,7 @@ class SocketEvents {
   static const playerEliminated  = 'player:eliminated';
   // 게임 라이프사이클
   static const gameStart        = 'game:start';
+  static const gameStarted      = 'game:started';
   static const gameRequestState = 'game:request_state';
   static const gameStateUpdate  = 'game:state_update';
   static const gameOver         = 'game:over';
@@ -122,6 +123,7 @@ class SocketService {
   final _playerEliminatedController = StreamController<Map<String, dynamic>>.broadcast();
   final _gameStateController        = StreamController<Map<String, dynamic>>.broadcast();
   final _gameOverController         = StreamController<Map<String, dynamic>>.broadcast();
+  final _gameStartedController      = StreamController<Map<String, dynamic>>.broadcast();
   final Map<String, StreamController<Map<String, dynamic>>> _gameEventControllers = {};
 
   Stream<LocationPayload>      get onLocationChanged => _locationController.stream;
@@ -140,6 +142,7 @@ class SocketService {
   Stream<Map<String, dynamic>> get onPlayerEliminated  => _playerEliminatedController.stream;
   Stream<Map<String, dynamic>> get onGameStateUpdate   => _gameStateController.stream;
   Stream<Map<String, dynamic>> get onGameOver          => _gameOverController.stream;
+  Stream<Map<String, dynamic>> get onGameStarted       => _gameStartedController.stream;
 
   bool get isConnected => _isConnected;
 
@@ -267,7 +270,12 @@ class SocketService {
       // 게임 종료
       ..on(SocketEvents.gameOver, (data) =>
           _gameOverController.add(Map<String, dynamic>.from(data as Map? ?? {})))
-      ..on(gameStarted, (data) => _emitGameEvent(gameStarted, data))
+      ..on(gameStarted, (data) {
+          _emitGameEvent(gameStarted, data);
+          if (data is Map) {
+            _gameStartedController.add(Map<String, dynamic>.from(data));
+          }
+        })
       ..on(gameRoleAssigned, (data) => _emitGameEvent(gameRoleAssigned, data))
       ..on(gameKillConfirmed, (data) => _emitGameEvent(gameKillConfirmed, data))
       ..on(gameBodyFound, (data) => _emitGameEvent(gameBodyFound, data))
@@ -468,6 +476,7 @@ class SocketService {
     _playerEliminatedController.close();
     _gameStateController.close();
     _gameOverController.close();
+    _gameStartedController.close();
     for (final controller in _gameEventControllers.values) {
       controller.close();
     }

@@ -4,6 +4,7 @@ import { authenticate } from '../middleware/auth.js';
 import * as sessionService from '../services/sessionService.js';
 import * as locationService from '../services/locationService.js';
 import { getIo, EVENTS } from '../websocket/index.js';
+import { setCache } from '../config/redis.js';
 
 const createSessionSchema = z.object({
   name:          z.string().max(100).optional(),
@@ -258,6 +259,47 @@ export default async function sessionRoutes(fastify) {
       };
       return reply.code(errorMap[err.message] || 500).send({ error: err.message });
     }
+  });
+
+  // ── POST /sessions/:sessionId/start ─────────────────────────────────────
+  // 게임 시작 (호스트만, 최소 인원 검증 후 game:started 이벤트 emit)
+  fastify.post('/:sessionId/start', async (request, reply) => {
+    const { sessionId } = request.params;
+
+    const session = await sessionService.getSession(sessionId);
+    if (!session) {
+      return reply.code(404).send({ error: 'SESSION_NOT_FOUND' });
+    }
+    if (session.host_user_id !== request.user.id) {
+      return reply.code(403).send({ error: 'NOT_HOST' });
+    }
+
+    const members = await sessionService.getSessionMembers(sessionId);
+    const activeModules = session.active_modules || [];
+
+    // 게임 타입별 최소 인원 검증: 모듈 없음 → 2명, 그 외 → 4명
+    const minPlayers = activeModules.length === 0 ? 2 : 4;
+    if (members.length < minPlayers) {
+      return reply.code(400).send({
+        error: 'NOT_ENOUGH_PLAYERS',
+        required: minPlayers,
+        current: members.length,
+      });
+    }
+
+    // Redis에 게임 시작 상태 저장 (세션 만료 시간까지 유지)
+    await setCache(`game:${sessionId}:started`, true, 86400);
+
+    const io = getIo();
+    if (io) {
+      io.to(`session:${sessionId}`).emit(EVENTS.GAME_STARTED, {
+        sessionId,
+        startedAt:     new Date().toISOString(),
+        activeModules: activeModules,
+      });
+    }
+
+    return reply.send({ started: true, sessionId });
   });
 
   // ── PATCH /sessions/:sessionId/sharing ───────────────────────────────────

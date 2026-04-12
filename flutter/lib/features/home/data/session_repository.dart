@@ -62,6 +62,7 @@ class Session {
   final DateTime? expiresAt; // 추가됨: 세션 만료 시간
   final List<String> activeModules;
   final Map<String, dynamic> moduleConfigs;
+  final String gameStatus; // 'lobby' | 'playing'
 
   const Session({
     required this.id,
@@ -74,7 +75,10 @@ class Session {
     this.expiresAt,
     this.activeModules = const [],
     this.moduleConfigs = const {},
+    this.gameStatus = 'lobby',
   });
+
+  SessionType get sessionType => SessionType.fromModules(activeModules);
 
   factory Session.fromMap(Map<String, dynamic> m) {
     final rawMembers = m['members'] as List<dynamic>? ?? [];
@@ -102,6 +106,7 @@ class Session {
       expiresAt:     parsedExpiresAt,
       activeModules: rawModules.whereType<String>().toList(),
       moduleConfigs: rawConfigs,
+      gameStatus:    m['game_status'] as String? ?? 'lobby',
     );
   }
 }
@@ -128,6 +133,15 @@ enum SessionType {
         return ['mission', 'item'];
     }
   }
+
+  static SessionType fromModules(List<String> modules) {
+    if (modules.contains('proximity')) return SessionType.chase;
+    if (modules.contains('vote')) return SessionType.verbal;
+    if (modules.contains('mission')) return SessionType.location;
+    return SessionType.defaultType;
+  }
+
+  int get minPlayers => this == SessionType.defaultType ? 2 : 4;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,6 +227,10 @@ class SessionRepository {
   Future<void> kickMember(String sessionId, String userId) async {
     await _api.delete('/sessions/$sessionId/members/$userId');
   }
+
+  Future<void> startGame(String sessionId) async {
+    await _api.post('/sessions/$sessionId/start');
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -234,8 +252,8 @@ class SessionListNotifier extends AsyncNotifier<List<Session>> {
     state = await AsyncValue.guard(_fetch);
   }
 
-  // ★ 수정됨: _repository 대신 ref.read()를 사용하고, 반환된 session 객체에서 code를 뽑아냄
-  Future<String> createSession(
+  // 세션 생성 후 Session 객체를 반환 (lobby 이동에 사용)
+  Future<Session> createSession(
     String name, {
     int durationHours = 1,
     int maxMembers = 3,
@@ -248,20 +266,21 @@ class SessionListNotifier extends AsyncNotifier<List<Session>> {
         maxMembers,
         activeModules: activeModules,
       );
-      
+
       // 세션 생성 후 목록 새로고침
       await refresh();
-      
-      // 생성된 세션 객체에서 초대 코드만 반환
-      return session.code; 
+
+      return session;
     } catch (e) {
       rethrow;
     }
   }
 
-  Future<void> joinSession(String code) async {
-    await ref.read(sessionRepositoryProvider).joinSession(code);
+  // 세션 참가 후 Session 객체를 반환 (lobby 이동에 사용)
+  Future<Session> joinSession(String code) async {
+    final session = await ref.read(sessionRepositoryProvider).joinSession(code);
     await refresh();
+    return session;
   }
 
   Future<void> leaveSession(String sessionId) async {

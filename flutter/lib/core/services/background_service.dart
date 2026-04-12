@@ -225,7 +225,10 @@ void onStart(ServiceInstance service) async {
       int? batteryLevel;
       try {
         batteryLevel = await battery.batteryLevel;
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('[Background] 배터리 레벨 읽기 실패: $e');
+        batteryLevel = null;
+      }
 
       // 3-1. 이전 위치와 비교해 실제 이동 여부 판정
       String moveStatus = 'moving';
