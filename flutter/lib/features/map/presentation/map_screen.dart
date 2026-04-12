@@ -34,8 +34,8 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
   final String _sessionId;
   final Ref _ref;
 
-  final _socket   = SocketService();
-  final _gps      = GpsLocationService();
+  final _socket = SocketService();
+  final _gps = GpsLocationService();
 
   StreamSubscription? _locationSub;
   StreamSubscription? _memberJoinSub;
@@ -61,13 +61,14 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
 
   // ★ 추가됨: 지오펜스 상태 관리를 위한 클래스 변수
   final Set<String> _insideGeofences = {}; // 현재 내가 들어가 있는 지오펜스 ID 목록
-  List<dynamic> _currentGeofences = [];    // 현재 세션의 지오펜스 목록 (dynamic은 실제 Geofence 모델로 변경 권장)
+  List<dynamic> _currentGeofences =
+      []; // 현재 세션의 지오펜스 목록 (dynamic은 실제 Geofence 모델로 변경 권장)
 
   Future<void> _init() async {
     // 1. 세션 이름: sessionListProvider 캐시에서 조회
     final cachedSessions = _ref.read(sessionListProvider).valueOrNull ?? [];
     final cached = cachedSessions.where((s) => s.id == _sessionId);
-    
+
     if (cached.isNotEmpty) {
       state = state.copyWith(sessionName: cached.first.name);
     }
@@ -82,7 +83,8 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
     // ★ 추가됨: 현재 세션의 지오펜스 목록 로드
     // (이 부분은 실제 지오펜스 Provider나 Repository 호출 로직으로 수정하세요)
     try {
-      _currentGeofences = await _ref.read(geofenceRepositoryProvider).getGeofences(_sessionId);
+      _currentGeofences =
+          await _ref.read(geofenceRepositoryProvider).getGeofences(_sessionId);
     } catch (e) {
       debugPrint('[Map] 지오펜스 로드 실패: $e');
     }
@@ -392,8 +394,9 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
 
       final authUser = _ref.read(authProvider).valueOrNull;
       if (authUser != null) {
-        final myList =
-            session.members.where((member) => member.userId == authUser.id).toList();
+        final myList = session.members
+            .where((member) => member.userId == authUser.id)
+            .toList();
         if (myList.isNotEmpty) {
           final me = myList.first;
           state = state.copyWith(
@@ -409,14 +412,16 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
   }
 
   // ── 근접 거리 계산 (Haversine, 미터) ────────────────────────────────────
-  static double _haversineMeters(double lat1, double lng1, double lat2, double lng2) {
+  static double _haversineMeters(
+      double lat1, double lng1, double lat2, double lng2) {
     const R = 6371000.0;
     final dLat = (lat2 - lat1) * math.pi / 180;
     final dLng = (lng2 - lng1) * math.pi / 180;
     final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
         math.cos(lat1 * math.pi / 180) *
-        math.cos(lat2 * math.pi / 180) *
-        math.sin(dLng / 2) * math.sin(dLng / 2);
+            math.cos(lat2 * math.pi / 180) *
+            math.sin(dLng / 2) *
+            math.sin(dLng / 2);
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
   }
 
@@ -429,7 +434,7 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
       double distance = Geolocator.distanceBetween(
         myPos.latitude,
         myPos.longitude,
-        gf.latitude, 
+        gf.latitude,
         gf.longitude,
       );
 
@@ -440,8 +445,7 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
         _insideGeofences.add(gf.id);
         // NotificationService().showNotification('지오펜스 진입', '${gf.name} 영역에 들어왔습니다!');
         debugPrint('[Geofence] 진입: ${gf.name}');
-      } 
-      else if (!isCurrentlyInside && wasInside) {
+      } else if (!isCurrentlyInside && wasInside) {
         _insideGeofences.remove(gf.id);
         // NotificationService().showNotification('지오펜스 이탈', '${gf.name} 영역을 벗어났습니다.');
         debugPrint('[Geofence] 이탈: ${gf.name}');
@@ -452,7 +456,9 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
   // ── 위치 공유 ON/OFF 토글 (즉각 갱신 로직 포함) ────────────────────────────────
   Future<void> toggleSharing(bool enabled) async {
     try {
-      await _ref.read(sessionRepositoryProvider).toggleSharing(_sessionId, enabled);
+      await _ref
+          .read(sessionRepositoryProvider)
+          .toggleSharing(_sessionId, enabled);
       _gps.setSharingEnabled(enabled);
       state = state.copyWith(sharingEnabled: enabled);
 
@@ -466,7 +472,7 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
         if (authUser != null) {
           final myId = authUser.id;
           final currentMe = state.members[myId];
-          
+
           if (currentMe != null) {
             final updated = Map<String, MemberState>.from(state.members);
             updated[myId] = currentMe.copyWith(
@@ -478,7 +484,8 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
             state = state.copyWith(members: updated);
           }
 
-          _socket.sendLocationUpdate(_sessionId, pos.latitude, pos.longitude, 'moving');
+          _socket.sendLocationUpdate(
+              _sessionId, pos.latitude, pos.longitude, 'moving');
         }
       }
     } catch (e) {
@@ -516,8 +523,8 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
     _socket.emitGameStart(_sessionId);
   }
 
-  void openVote() {
-    _socket.emitVoteOpen(_sessionId);
+  void openVote(Function(Map) onResult) {
+    _socket.emitVoteOpen(_sessionId, onResult);
   }
 
   Future<void> reconnect() async {
@@ -559,7 +566,6 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
     FlutterBackgroundService().invoke('stopService');
     debugPrint('[Background] 포그라운드 서비스 종료 신호 발송');
     super.dispose();
-    
   }
 }
 
@@ -589,12 +595,12 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   // ── 마커 캐시 ─────────────────────────────────────────────────────────────
   // members/sharingEnabled/hiddenMembers가 실제로 변경됐을 때만 마커를 재계산한다.
   // myPosition이 바뀌는 경우(GPS 업데이트)에는 재계산하지 않는다.
-  Set<NMarker>              _cachedMarkers        = {};
+  Set<NMarker> _cachedMarkers = {};
   Map<String, MemberState>? _prevMembers;
-  bool?                     _prevSharingEnabled;
-  Set<String>?              _prevHiddenMembers;
-  String?                   _prevMyUserId;
-  Set<String>?              _prevEliminatedUserIds;
+  bool? _prevSharingEnabled;
+  Set<String>? _prevHiddenMembers;
+  String? _prevMyUserId;
+  Set<String>? _prevEliminatedUserIds;
 
   @override
   Widget build(BuildContext context) {
@@ -624,7 +630,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       (prev, next) {
         if (prev?.shouldNavigateToRole != true && next.shouldNavigateToRole) {
           context.push('/game/${widget.sessionId}/role');
-          ref.read(gameProvider(widget.sessionId).notifier).resetRoleNavigation();
+          ref
+              .read(gameProvider(widget.sessionId).notifier)
+              .resetRoleNavigation();
         }
 
         if (prev?.gameOverWinner == null && next.gameOverWinner != null) {
@@ -633,45 +641,51 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       },
     );
 
-    final mapState  = ref.watch(mapSessionProvider(widget.sessionId));
-    final authUser  = ref.watch(authProvider).valueOrNull;
-    final amgState  = ref.watch(gameProvider(widget.sessionId));
+    final mapState = ref.watch(mapSessionProvider(widget.sessionId));
+    final authUser = ref.watch(authProvider).valueOrNull;
+    final amgState = ref.watch(gameProvider(widget.sessionId));
     final completed =
         (amgState.missionProgress['completed'] as num?)?.toInt() ?? 0;
     final total = (amgState.missionProgress['total'] as num?)?.toInt() ?? 0;
     final rawPercent =
         (amgState.missionProgress['percent'] as num?)?.toDouble() ??
-        (total > 0 ? completed / total : 0);
-    final progressValue =
-        ((rawPercent > 1 ? rawPercent / 100 : rawPercent).clamp(0.0, 1.0) as num)
-            .toDouble();
-    final percentLabel = (progressValue * 100).round();
+            (total > 0 ? completed / total : 0);
+    final percentLabel = ((((rawPercent > 1 ? rawPercent / 100 : rawPercent)
+                    .clamp(0.0, 1.0) as num)
+                .toDouble()) *
+            100)
+        .round();
 
     // 활성 모듈 목록 (세션 캐시에서 조회)
     final activeModules = getSessionModules(ref).toSet();
+    final isDefaultMode = activeModules.isEmpty;
+    const aiChatHeight = 236.0;
+    final showAiChat = amgState.isStarted && !isDefaultMode;
+    final showMemberPanel = isDefaultMode;
+    final overlayBottomOffset = showAiChat ? aiChatHeight + 20 : 290.0;
+    final floatingControlsBottom =
+        showAiChat ? aiChatHeight + 104 : (showMemberPanel ? 280.0 : 96.0);
 
     // 내 위치 따라가기
     final myPos = mapState.myPosition;
     if (_followMe && myPos != null && _mapController != null) {
-      _mapController!.updateCamera(
-        NCameraUpdate.scrollAndZoomTo(
-          target: NLatLng(myPos.latitude, myPos.longitude),
-        )..setAnimation(animation: NCameraAnimation.easing)
-      );
+      _mapController!.updateCamera(NCameraUpdate.scrollAndZoomTo(
+        target: NLatLng(myPos.latitude, myPos.longitude),
+      )..setAnimation(animation: NCameraAnimation.easing));
     }
 
     // 마커 캐시: 마커에 영향 주는 상태가 실제로 바뀐 경우에만 재계산
     final myUserId = authUser?.id;
-    if (!identical(_prevMembers,           mapState.members)          ||
-        _prevSharingEnabled               != mapState.sharingEnabled   ||
-        !identical(_prevHiddenMembers,     mapState.hiddenMembers)     ||
+    if (!identical(_prevMembers, mapState.members) ||
+        _prevSharingEnabled != mapState.sharingEnabled ||
+        !identical(_prevHiddenMembers, mapState.hiddenMembers) ||
         !identical(_prevEliminatedUserIds, mapState.eliminatedUserIds) ||
-        _prevMyUserId                     != myUserId) {
-      _prevMembers           = mapState.members;
-      _prevSharingEnabled    = mapState.sharingEnabled;
-      _prevHiddenMembers     = mapState.hiddenMembers;
+        _prevMyUserId != myUserId) {
+      _prevMembers = mapState.members;
+      _prevSharingEnabled = mapState.sharingEnabled;
+      _prevHiddenMembers = mapState.hiddenMembers;
       _prevEliminatedUserIds = mapState.eliminatedUserIds;
-      _prevMyUserId          = myUserId;
+      _prevMyUserId = myUserId;
 
       _cachedMarkers = _buildMarkers(
         mapState.members,
@@ -695,8 +709,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           NaverMap(
             options: NaverMapViewOptions(
               initialCameraPosition: NCameraPosition(
-                target: myPos != null 
-                    ? NLatLng(myPos.latitude, myPos.longitude) 
+                target: myPos != null
+                    ? NLatLng(myPos.latitude, myPos.longitude)
                     : const NLatLng(37.5665, 126.9780),
                 zoom: 14.0,
               ),
@@ -722,13 +736,13 @@ class _MapScreenState extends ConsumerState<MapScreen> {
             left: 0,
             right: 0,
             child: _TopBar(
-              sessionId:        widget.sessionId,
-              sessionName:      mapState.sessionName ?? '세션',
-              isConnected:      mapState.isConnected,
+              sessionId: widget.sessionId,
+              sessionName: mapState.sessionName ?? '세션',
+              isConnected: mapState.isConnected,
               hasEverConnected: mapState.hasEverConnected,
-              memberCount:      mapState.members.length,
-              sharingEnabled:   mapState.sharingEnabled,
-              myRole:           mapState.myRole,
+              memberCount: mapState.members.length,
+              sharingEnabled: mapState.sharingEnabled,
+              myRole: mapState.myRole,
               onSharingToggle: (enabled) => ref
                   .read(mapSessionProvider(widget.sessionId).notifier)
                   .toggleSharing(enabled),
@@ -741,6 +755,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           // ── 오른쪽 FAB들 ──────────────────────────────────────────────────
           MapFloatingControls(
             followMe: _followMe,
+            bottomOffset: floatingControlsBottom,
             onFollowPressed: () {
               setState(() => _followMe = true);
               if (myPos != null) {
@@ -765,14 +780,36 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                 .sendKillAction(mapState.proximateTargetId!),
             onOpenVote: () => ref
                 .read(mapSessionProvider(widget.sessionId).notifier)
-                .openVote(),
+                .openVote((result) {
+              if (result['ok'] == true) return;
+
+              final error = result['error']?.toString() ?? '투표를 시작하지 못했습니다.';
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(error)),
+              );
+            }),
             onCloseFinished: () => context.pop(),
-            onSendEmergency: () => ref
-                .read(gameProvider(widget.sessionId).notifier)
-                .sendEmergency(),
+            bottomActionOffset: overlayBottomOffset,
+            showTopStatus: isDefaultMode,
           ),
 
-          if (amgState.isStarted)
+          if (amgState.isStarted && !isDefaultMode)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 86,
+              left: 16,
+              right: 16,
+              child: _GameInfoStrip(
+                role: amgState.myRole,
+                aliveCount: mapState.gameState.aliveCount,
+                roundNumber: activeModules.contains('round')
+                    ? mapState.gameState.roundNumber
+                    : null,
+                missionText: activeModules.contains('mission')
+                    ? '미션 $completed / $total ($percentLabel%)'
+                    : null,
+              ),
+            ),
+          /* if (amgState.isStarted)
             Positioned(
               top: 96,
               left: 0,
@@ -813,7 +850,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                   ),
                 ),
               ),
-            ),
+            ), */
 
           if (mapState.myRole == 'host' &&
               mapState.gameState.status == 'none' &&
@@ -836,12 +873,15 @@ class _MapScreenState extends ConsumerState<MapScreen> {
               ),
             ),
 
-          if (amgState.isStarted)
+          if (showAiChat)
             Positioned(
               bottom: 0,
               left: 0,
               right: 0,
-              child: AIChatPanel(sessionId: widget.sessionId),
+              child: AIChatPanel(
+                sessionId: widget.sessionId,
+                height: aiChatHeight,
+              ),
             ),
 
           // ── 회의 화면 오버레이 ──────────────────────────────────────────
@@ -858,31 +898,32 @@ class _MapScreenState extends ConsumerState<MapScreen> {
             ),
 
           // ── 하단 멤버 패널 ─────────────────────────────────────────────────
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: MapBottomMemberPanel(
-              members: mapState.members.values.toList(),
-              myPosition: myPos,
-              hiddenMembers: mapState.hiddenMembers,
-              eliminatedUserIds: mapState.eliminatedUserIds,
-              onSOS: () => _confirmSOS(context, ref),
-              onMemberTap: (member) {
-                if (member.lat == 0 && member.lng == 0) return;
-                setState(() => _followMe = false);
-                _mapController?.updateCamera(
-                  NCameraUpdate.scrollAndZoomTo(
-                    target: NLatLng(member.lat, member.lng),
-                    zoom: 15,
-                  )..setAnimation(animation: NCameraAnimation.easing),
-                );
-              },
-              onHideToggle: (userId) => ref
-                  .read(mapSessionProvider(widget.sessionId).notifier)
-                  .toggleHideMember(userId),
+          if (showMemberPanel)
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: MapBottomMemberPanel(
+                members: mapState.members.values.toList(),
+                myPosition: myPos,
+                hiddenMembers: mapState.hiddenMembers,
+                eliminatedUserIds: mapState.eliminatedUserIds,
+                onSOS: () => _confirmSOS(context, ref),
+                onMemberTap: (member) {
+                  if (member.lat == 0 && member.lng == 0) return;
+                  setState(() => _followMe = false);
+                  _mapController?.updateCamera(
+                    NCameraUpdate.scrollAndZoomTo(
+                      target: NLatLng(member.lat, member.lng),
+                      zoom: 15,
+                    )..setAnimation(animation: NCameraAnimation.easing),
+                  );
+                },
+                onHideToggle: (userId) => ref
+                    .read(mapSessionProvider(widget.sessionId).notifier)
+                    .toggleHideMember(userId),
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -903,8 +944,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     for (final m in members.values) {
       if (m.lat == 0 && m.lng == 0) continue;
 
-      final isMe          = m.userId == myUserId;
-      final isEliminated  = eliminatedUserIds.contains(m.userId);
+      final isMe = m.userId == myUserId;
+      final isEliminated = eliminatedUserIds.contains(m.userId);
       if (isMe && !sharingEnabled) continue;
       if (hiddenMembers.contains(m.userId)) continue;
 
@@ -978,7 +1019,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     if (points.length == 1) {
       _mapController!.updateCamera(
         NCameraUpdate.scrollAndZoomTo(
-          target: points.first, 
+          target: points.first,
           zoom: 15,
         )..setAnimation(animation: NCameraAnimation.easing),
       );
@@ -1028,7 +1069,9 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           ElevatedButton(
             onPressed: () {
               Navigator.pop(ctx);
-              ref.read(mapSessionProvider(widget.sessionId).notifier).triggerSOS();
+              ref
+                  .read(mapSessionProvider(widget.sessionId).notifier)
+                  .triggerSOS();
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
                   content: Text('SOS 알림을 전송했습니다'),
@@ -1065,10 +1108,10 @@ class _TopBar extends StatelessWidget {
 
   final String sessionId;
   final String sessionName;
-  final bool   isConnected;
-  final bool   hasEverConnected;
-  final int    memberCount;
-  final bool   sharingEnabled;
+  final bool isConnected;
+  final bool hasEverConnected;
+  final int memberCount;
+  final bool sharingEnabled;
   final String myRole;
   final ValueChanged<bool> onSharingToggle;
   final VoidCallback? onReconnect;
@@ -1183,11 +1226,11 @@ class _TopBar extends StatelessWidget {
             onSelected: (value) {
               switch (value) {
                 case 'history':
-                  context.push(AppRoutes.history
-                      .replaceFirst(':sessionId', sessionId));
+                  context.push(
+                      AppRoutes.history.replaceFirst(':sessionId', sessionId));
                 case 'geofence':
-                  context.push(AppRoutes.geofence
-                      .replaceFirst(':sessionId', sessionId));
+                  context.push(
+                      AppRoutes.geofence.replaceFirst(':sessionId', sessionId));
                 case 'members':
                   context.push('/session/$sessionId/members');
               }
@@ -1227,6 +1270,95 @@ class _TopBar extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _GameInfoStrip extends StatelessWidget {
+  const _GameInfoStrip({
+    this.role,
+    required this.aliveCount,
+    this.roundNumber,
+    this.missionText,
+  });
+
+  final am_game.GameRole? role;
+  final int aliveCount;
+  final int? roundNumber;
+  final String? missionText;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      ignoring: true,
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 420),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.54),
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              if (role != null)
+                _GameInfoChip(
+                  label: role!.isImpostor ? '임포스터' : '크루원',
+                  color: role!.isImpostor
+                      ? const Color(0xFFF87171)
+                      : const Color(0xFF4ADE80),
+                ),
+              _GameInfoChip(
+                label: '생존 $aliveCount명',
+                color: Colors.white,
+              ),
+              if (roundNumber != null)
+                _GameInfoChip(
+                  label: '라운드 $roundNumber',
+                  color: const Color(0xFFC4B5FD),
+                ),
+              if (missionText != null && missionText!.isNotEmpty)
+                _GameInfoChip(
+                  label: missionText!,
+                  color: const Color(0xFF86EFAC),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GameInfoChip extends StatelessWidget {
+  const _GameInfoChip({
+    required this.label,
+    required this.color,
+  });
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }

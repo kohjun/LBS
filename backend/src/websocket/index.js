@@ -11,6 +11,7 @@ import * as MissionSystem from '../game/MissionSystem.js';
 import KillCooldownManager from '../game/KillCooldownManager.js';
 import EventBus from '../game/EventBus.js';
 import * as AIDirector from '../ai/AIDirector.js';
+import { startGameForSession } from '../game/startGameService.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Socket.IO 이벤트 상수 (클라이언트와 공유하는 프로토콜)
@@ -446,49 +447,17 @@ export const createSocketServer = (httpServer) => {
       const sessionId = sid || socket.currentSessionId;
       if (!sessionId) return;
       try {
-        const session = await sessionService.getSession(sessionId);
-        if (!session || session.host_user_id !== userId) return;
-        const members = await sessionService.getSessionMembers(sessionId);
-        const aliveMembers = members.filter(m => !m.left_at);
-
-        // 임포스터 랜덤 배정
-        const impostorCount = session.impostor_count || 1;
-        const shuffled = [...aliveMembers].sort(() => Math.random() - 0.5);
-        const impostors = new Set(shuffled.slice(0, impostorCount).map(m => m.user_id));
-
-        // Redis에 게임 상태 저장
-        const gameState = {
-          status: 'in_progress',
-          startedAt: Date.now(),
-          impostors: [...impostors],
-          alivePlayerIds: aliveMembers.map((m) => m.user_id),
-          killLog: [],
-          meetingCount: 0,
-        };
-        await saveGameState(sessionId, gameState);
-        await redisClient.set(`game:${sessionId}:status`, 'in_progress');
-
-        // 각 플레이어에게 역할 개별 전송
-        for (const member of aliveMembers) {
-          const isImpostor = impostors.has(member.user_id);
-          const role = isImpostor ? 'impostor' : 'crew';
-          const team = isImpostor ? 'impostor' : 'crew';
-          io.to(`user:${member.user_id}`).emit(EVENTS.GAME_ROLE_ASSIGNED, {
-            role,
-            team,
-            impostors: isImpostor ? [...impostors] : [],
-          });
-        }
-
-        // 미션 배정
-        await MissionSystem.assignMissions(session, aliveMembers);
-
-        io.to(`session:${sessionId}`).emit(EVENTS.GAME_STARTED, {
-          playerCount: aliveMembers.length,
-          impostorCount,
+        await startGameForSession({
+          io,
+          sessionId,
+          requesterUserId: userId,
         });
       } catch (err) {
         console.error('[WS] game:start error:', err);
+        socket.emit(EVENTS.ERROR, {
+          code: err.message || 'GAME_START_FAILED',
+          ...(err.details ?? {}),
+        });
       }
     });
 
@@ -498,7 +467,9 @@ export const createSocketServer = (httpServer) => {
       if (!sessionId || !targetUserId) return;
       try {
         const gameRaw = await redisClient.get(`game:${sessionId}`);
-        if (!gameRaw) return;
+        if (!gameRaw) {
+          return respond({ ok: false, error: 'GAME_NOT_STARTED' });
+        }
         const gameState = normalizeGameState(JSON.parse(gameRaw));
 
         if (!gameState.impostors.includes(userId)) return;
@@ -533,49 +504,81 @@ export const createSocketServer = (httpServer) => {
     });
 
     // ── game:emergency ────────────────────────────────────────────────
-    socket.on(EVENTS.GAME_EMERGENCY, async ({ sessionId: sid } = {}) => {
+    socket.on(EVENTS.GAME_EMERGENCY, async ({ sessionId: sid } = {}, cb) => {
       const sessionId = sid || socket.currentSessionId;
-      if (!sessionId) return;
+      const respond = typeof cb === 'function' ? cb : () => {};
+      if (!sessionId) return respond({ ok: false, error: 'MISSING_SESSION_ID' });
       try {
         const gameRaw = await redisClient.get(`game:${sessionId}`);
-        if (!gameRaw) return;
+        if (!gameRaw) return respond({ ok: false, error: 'GAME_NOT_STARTED' });
         const gameState = normalizeGameState(JSON.parse(gameRaw));
-        if (!gameState.alivePlayerIds.includes(userId)) return;
+        if (!gameState.alivePlayerIds.includes(userId)) {
+          return respond({ ok: false, error: 'ONLY_ALIVE_PLAYERS' });
+        }
 
-        const session = await sessionService.getSession(sessionId);
-        session.aliveMembers = gameState.alivePlayerIds.map((id) => ({ userId: id }));
+        const [session, members] = await Promise.all([
+          sessionService.getSession(sessionId),
+          sessionService.getSessionMembers(sessionId),
+        ]);
+        if (!session) {
+          return respond({ ok: false, error: 'SESSION_NOT_FOUND' });
+        }
+        session.aliveMembers = members.filter((member) =>
+          gameState.alivePlayerIds.includes(member.user_id),
+        );
 
         VoteSystem.startMeeting(session, {
           callerId: userId,
           bodyId:   null,
           reason:   'emergency',
         });
+        respond({ ok: true });
       } catch (err) {
         console.error('[WS] game:emergency error:', err);
+        respond({ ok: false, error: err.message });
       }
     });
 
     // ── game:report ───────────────────────────────────────────────────
-    socket.on(EVENTS.GAME_REPORT, async ({ sessionId: sid, bodyId }) => {
+    socket.on(EVENTS.GAME_REPORT, async ({ sessionId: sid, bodyId }, cb) => {
       const sessionId = sid || socket.currentSessionId;
-      if (!sessionId || !bodyId) return;
+      const respond = typeof cb === 'function' ? cb : () => {};
+      if (!sessionId || !bodyId) {
+        return respond({ ok: false, error: 'MISSING_FIELDS' });
+      }
       try {
         const gameRaw = await redisClient.get(`game:${sessionId}`);
-        if (!gameRaw) return;
+        if (!gameRaw) {
+          return respond({ ok: false, error: 'GAME_NOT_STARTED' });
+        }
         const gameState = normalizeGameState(JSON.parse(gameRaw));
-        if (!gameState.alivePlayerIds.includes(userId)) return;
-        if (gameState.alivePlayerIds.includes(bodyId)) return; // 살아있으면 신고 불가
+        if (!gameState.alivePlayerIds.includes(userId)) {
+          return respond({ ok: false, error: 'ONLY_ALIVE_PLAYERS' });
+        }
+        if (gameState.alivePlayerIds.includes(bodyId)) {
+          return respond({ ok: false, error: 'BODY_NOT_FOUND' });
+        }
 
-        const session = await sessionService.getSession(sessionId);
-        session.aliveMembers = gameState.alivePlayerIds.map((id) => ({ userId: id }));
+        const [session, members] = await Promise.all([
+          sessionService.getSession(sessionId),
+          sessionService.getSessionMembers(sessionId),
+        ]);
+        if (!session) {
+          return respond({ ok: false, error: 'SESSION_NOT_FOUND' });
+        }
+        session.aliveMembers = members.filter((member) =>
+          gameState.alivePlayerIds.includes(member.user_id),
+        );
 
         VoteSystem.startMeeting(session, {
           callerId: userId,
           bodyId,
           reason:   'report',
         });
+        respond({ ok: true });
       } catch (err) {
         console.error('[WS] game:report error:', err);
+        respond({ ok: false, error: err.message });
       }
     });
 
@@ -661,9 +664,20 @@ export const createSocketServer = (httpServer) => {
 
         respond({ ok: true });
 
-        const { answer, sources } = await AIDirector.ask(roomLike, playerLike, question);
+        const {
+          answer,
+          sources,
+          isError = false,
+          errorCode = null,
+        } = await AIDirector.ask(roomLike, playerLike, question);
 
-        socket.emit(EVENTS.GAME_AI_REPLY, { question, answer, sources });
+        socket.emit(EVENTS.GAME_AI_REPLY, {
+          question,
+          answer,
+          sources,
+          isError,
+          errorCode,
+        });
 
       } catch (err) {
         console.error('[WS] game:ai_ask error:', err);
@@ -671,6 +685,8 @@ export const createSocketServer = (httpServer) => {
           question,
           answer: '죄송해요, 잠시 후 다시 물어봐주세요! 🙏',
           sources: [],
+          isError: true,
+          errorCode: 'AI_UNAVAILABLE',
         });
       }
     });
@@ -694,6 +710,7 @@ export const createSocketServer = (httpServer) => {
           Promise.resolve(normalizeGameState(JSON.parse(gameRaw))),
           redisClient.get(`tag:${sessionId}:tagger`),
         ]);
+        const isImpostor = gameState.impostors.includes(userId);
 
         socket.emit(EVENTS.GAME_STATE_UPDATE, {
           sessionId,
@@ -703,6 +720,9 @@ export const createSocketServer = (httpServer) => {
           aliveCount:     gameState.alivePlayerIds.length,
           alivePlayerIds: gameState.alivePlayerIds,
           taggerId:       taggerId ?? null,
+          role:           isImpostor ? 'impostor' : 'crew',
+          team:           isImpostor ? 'impostor' : 'crew',
+          impostors:      isImpostor ? gameState.impostors : [],
         });
 
       } catch (err) {
@@ -959,15 +979,103 @@ export const createSocketServer = (httpServer) => {
     });
   });
 
-  EventBus.on('vote_result', async ({ session, result, ejected }) => {
+  EventBus.on('pre_vote_submitted', ({ sessionId, count, totalPlayers }) => {
+    io.to(`session:${sessionId}`).emit(EVENTS.GAME_PRE_VOTE_SUBMITTED, {
+      totalPreVotes: count,
+      totalPlayers,
+    });
+  });
+
+  EventBus.on('vote_submitted', ({ sessionId, count, totalPlayers }) => {
+    io.to(`session:${sessionId}`).emit(EVENTS.GAME_VOTE_SUBMITTED, {
+      totalVotes: count,
+      totalPlayers,
+    });
+  });
+
+  EventBus.on('vote_result', async ({ session, result, ejected, ejectedMember }) => {
+    let nextResult = { ...result };
+    let ejectedPayload = ejected
+      ? {
+          userId: ejected,
+          nickname: ejectedMember?.nickname ?? ejected,
+        }
+      : null;
+
+    try {
+      const gameRaw = await redisClient.get(`game:${session.id}`);
+      if (gameRaw) {
+        const gameState = normalizeGameState(JSON.parse(gameRaw));
+
+        if (ejected) {
+          const wasImpostor = gameState.impostors.includes(ejected);
+          nextResult = {
+            ...nextResult,
+            wasImpostor,
+          };
+
+          if (gameState.alivePlayerIds.includes(ejected)) {
+            gameState.alivePlayerIds = gameState.alivePlayerIds.filter(
+              (id) => id !== ejected,
+            );
+          }
+
+          const aliveImpostors = gameState.impostors.filter((id) =>
+            gameState.alivePlayerIds.includes(id),
+          );
+          const aliveCrew = gameState.alivePlayerIds.filter(
+            (id) => !gameState.impostors.includes(id),
+          );
+
+          let gameOverPayload = null;
+          if (aliveImpostors.length === 0) {
+            gameState.status = 'finished';
+            gameState.finishedAt = Date.now();
+            gameOverPayload = {
+              winner: 'crew',
+              reason: 'impostors_ejected',
+            };
+          } else if (aliveImpostors.length >= aliveCrew.length) {
+            gameState.status = 'finished';
+            gameState.finishedAt = Date.now();
+            gameOverPayload = {
+              winner: 'impostor',
+              reason: 'outnumbered',
+            };
+          }
+
+          await saveGameState(session.id, gameState);
+
+          io.to(`session:${session.id}`).emit(EVENTS.GAME_STATE_UPDATE, {
+            sessionId: session.id,
+            status: gameState.status,
+            aliveCount: gameState.alivePlayerIds.length,
+            alivePlayerIds: gameState.alivePlayerIds,
+          });
+
+          if (gameOverPayload != null) {
+            io.to(`session:${session.id}`).emit(
+              EVENTS.GAME_OVER,
+              gameOverPayload,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[WS] vote_result sync error:', e);
+    }
     io.to(`session:${session.id}`).emit(EVENTS.GAME_VOTE_RESULT, {
-      ...result,
-      ejected: ejected ? { userId: ejected.userId } : null,
+      ...nextResult,
+      ejected: ejectedPayload,
     });
 
     // AI 투표 결과 해설
     try {
-      const msg = await AIDirector.onVoteResult(session, result, ejected);
+      const msg = await AIDirector.onVoteResult(
+        session,
+        nextResult,
+        ejectedPayload,
+      );
       if (msg) io.to(`session:${session.id}`).emit(EVENTS.GAME_AI_MESSAGE, {
         type: 'vote_result', message: msg,
       });

@@ -1,5 +1,3 @@
-// lib/features/game/providers/game_provider.dart
-
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -15,14 +13,45 @@ final gameProvider =
 class GameNotifier extends StateNotifier<AmongUsGameState> {
   GameNotifier(this._sessionId) : super(const AmongUsGameState()) {
     _subscribeToEvents();
+    if (_socket.isConnected) {
+      _socket.requestGameState(_sessionId);
+    }
   }
 
   final String _sessionId;
   final _socket = SocketService();
-
   final List<StreamSubscription> _subs = [];
 
   void _subscribeToEvents() {
+    _subs.add(_socket.onConnectionChange.listen((connected) {
+      if (connected) {
+        _socket.requestGameState(_sessionId);
+      }
+    }));
+
+    _subs.add(_socket.onGameStateUpdate.listen((data) {
+      final role = data['role'] as String?;
+      final team = data['team'] as String?;
+      final recoveredRole = role != null && team != null
+          ? GameRole(
+              role: role,
+              team: team,
+              impostors:
+                  (data['impostors'] as List?)?.whereType<String>().toList() ??
+                      const [],
+            )
+          : null;
+
+      state = state.copyWith(
+        isStarted: (data['status'] as String? ?? 'none') != 'none',
+        totalPlayers: data['aliveCount'] as int? ?? state.totalPlayers,
+        myRole: recoveredRole ?? state.myRole,
+        shouldNavigateToRole: recoveredRole != null && state.myRole == null
+            ? true
+            : state.shouldNavigateToRole,
+      );
+    }));
+
     _subs.add(_socket.onGameEvent(SocketService.gameStarted).listen((data) {
       state = state.copyWith(
         isStarted: true,
@@ -30,7 +59,8 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
       );
     }));
 
-    _subs.add(_socket.onGameEvent(SocketService.gameRoleAssigned).listen((data) {
+    _subs
+        .add(_socket.onGameEvent(SocketService.gameRoleAssigned).listen((data) {
       state = state.copyWith(
         myRole: GameRole.fromMap(data),
         shouldNavigateToRole: true,
@@ -69,12 +99,14 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
       }),
     );
 
-    _subs.add(_socket.onGameEvent(SocketService.gameVoteSubmitted).listen((data) {
-      state = state.copyWith(
-        totalVoted: data['totalVotes'] as int? ?? 0,
-        totalPlayers: data['totalPlayers'] as int? ?? state.totalPlayers,
-      );
-    }));
+    _subs.add(
+      _socket.onGameEvent(SocketService.gameVoteSubmitted).listen((data) {
+        state = state.copyWith(
+          totalVoted: data['totalVotes'] as int? ?? 0,
+          totalPlayers: data['totalPlayers'] as int? ?? state.totalPlayers,
+        );
+      }),
+    );
 
     _subs.add(_socket.onGameEvent(SocketService.gameVoteResult).listen((data) {
       state = state.copyWith(
@@ -98,10 +130,13 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
     }));
 
     _subs.add(_socket.onGameEvent(SocketService.gameAiReply).listen((data) {
+      final isError = data['isError'] as bool? ?? false;
+      final message = data['answer'] as String? ?? 'AI 응답을 불러오지 못했습니다.';
+
       final log = ChatLog(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
-        type: ChatLogType.aiReply,
-        message: data['answer'] as String,
+        type: isError ? ChatLogType.system : ChatLogType.aiReply,
+        message: message,
         timestamp: DateTime.now(),
       );
       state = state.copyWith(chatLogs: [...state.chatLogs, log]);
@@ -113,11 +148,13 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
         final completed = (data['completed'] as num?)?.toInt() ?? 0;
         final total = (data['total'] as num?)?.toInt() ?? 0;
         final percent = (data['percent'] as num?)?.toDouble() ?? 0;
+        final hasMission = missionId != null &&
+            state.missions.any((mission) => mission.id == missionId);
 
         final updatedMissions = missionId == null
             ? state.missions
-            : state.missions
-                .map(
+            : [
+                ...state.missions.map(
                   (mission) => mission.id == missionId
                       ? GameMission(
                           id: mission.id,
@@ -126,12 +163,23 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
                           type: mission.type,
                           status: completed >= total && total > 0
                               ? 'completed'
-                              : mission.status,
+                              : 'in_progress',
                           isFake: mission.isFake,
                         )
                       : mission,
-                )
-                .toList();
+                ),
+                if (!hasMission)
+                  GameMission(
+                    id: missionId,
+                    title: data['title'] as String? ?? missionId,
+                    zone: data['zone'] as String? ?? '',
+                    type: data['type'] as String? ?? 'mini_game',
+                    status: completed >= total && total > 0
+                        ? 'completed'
+                        : 'in_progress',
+                    isFake: data['isFake'] as bool? ?? false,
+                  ),
+              ];
 
         state = state.copyWith(
           missions: updatedMissions,
@@ -157,9 +205,11 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
 
   void startGame() => _socket.startGame(_sessionId);
 
-  void sendKill(String targetUserId) => _socket.sendKill(_sessionId, targetUserId);
+  void sendKill(String targetUserId) =>
+      _socket.sendKill(_sessionId, targetUserId);
 
-  void sendEmergency() => _socket.sendEmergencyMeeting(_sessionId);
+  void sendEmergency([Function(Map)? onResult]) =>
+      _socket.sendEmergencyMeeting(_sessionId, onResult);
 
   void sendReport(String bodyId) => _socket.sendReport(_sessionId, bodyId);
 
@@ -183,15 +233,15 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
     state = state.copyWith(chatLogs: [...state.chatLogs, myLog]);
 
     _socket.sendAiQuestion(_sessionId, question, (res) {
-      if (res['ok'] != true) {
-        final errLog = ChatLog(
-          id: DateTime.now().millisecondsSinceEpoch.toString(),
-          type: ChatLogType.system,
-          message: '질문 전송 실패: ${res['error']}',
-          timestamp: DateTime.now(),
-        );
-        state = state.copyWith(chatLogs: [...state.chatLogs, errLog]);
-      }
+      if (res['ok'] == true) return;
+
+      final errLog = ChatLog(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        type: ChatLogType.system,
+        message: '질문 전송 실패: ${res['error']}',
+        timestamp: DateTime.now(),
+      );
+      state = state.copyWith(chatLogs: [...state.chatLogs, errLog]);
     });
   }
 

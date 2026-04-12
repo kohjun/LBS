@@ -13,6 +13,7 @@ import '../../features/history/presentation/history_screen.dart';
 import '../../features/geofence/presentation/geofence_screen.dart';
 import '../../features/settings/presentation/settings_screen.dart';
 import '../../features/session/presentation/member_management_screen.dart';
+import '../../features/game/presentation/game_main_screen.dart';
 import '../../features/game/presentation/game_role_screen.dart';
 import '../../features/game/presentation/game_result_screen.dart';
 import '../../features/lobby/presentation/lobby_screen.dart';
@@ -20,15 +21,16 @@ import '../../features/home/data/session_repository.dart';
 
 // 라우트 경로 상수
 abstract class AppRoutes {
-  static const login    = '/login';
+  static const login = '/login';
   static const register = '/register';
-  static const home     = '/';
-  static const lobby    = '/lobby/:sessionId';
-  static const map      = '/map/:sessionId';
-  static const history  = '/history/:sessionId';
+  static const home = '/';
+  static const lobby = '/lobby/:sessionId';
+  static const game = '/game/:sessionId';
+  static const map = '/map/:sessionId';
+  static const history = '/history/:sessionId';
   static const geofence = '/geofence/:sessionId';
   static const settings = '/settings';
-  static const members  = '/session/:sessionId/members';
+  static const members = '/session/:sessionId/members';
 }
 
 final routerProvider = Provider<GoRouter>((ref) {
@@ -38,7 +40,7 @@ final routerProvider = Provider<GoRouter>((ref) {
     initialLocation: AppRoutes.home,
     redirect: (context, state) {
       final isLoggedIn = authState.valueOrNull != null;
-      final isLoading  = authState.isLoading;
+      final isLoading = authState.isLoading;
 
       if (isLoading) return null;
 
@@ -46,7 +48,7 @@ final routerProvider = Provider<GoRouter>((ref) {
           state.matchedLocation == AppRoutes.register;
 
       if (!isLoggedIn && !isAuthRoute) return AppRoutes.login;
-      if (isLoggedIn && isAuthRoute)   return AppRoutes.home;
+      if (isLoggedIn && isAuthRoute) return AppRoutes.home;
       return null;
     },
     routes: [
@@ -73,6 +75,21 @@ final routerProvider = Provider<GoRouter>((ref) {
             orElse: () => SessionType.defaultType,
           );
           return LobbyScreen(
+            sessionId: sessionId,
+            sessionType: sessionType,
+          );
+        },
+      ),
+      GoRoute(
+        path: AppRoutes.game,
+        builder: (context, state) {
+          final sessionId = state.pathParameters['sessionId']!;
+          final typeStr = state.uri.queryParameters['type'] ?? 'defaultType';
+          final sessionType = SessionType.values.firstWhere(
+            (value) => value.name == typeStr,
+            orElse: () => SessionType.defaultType,
+          );
+          return GameMainScreen(
             sessionId: sessionId,
             sessionType: sessionType,
           );
@@ -121,8 +138,13 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/game/:sessionId/result/:winner',
         builder: (context, state) {
           final sessionId = state.pathParameters['sessionId']!;
-          final winner    = state.pathParameters['winner']!;
-          return GameResultScreen(sessionId: sessionId, winner: winner);
+          final winner = state.pathParameters['winner']!;
+          final reason = state.uri.queryParameters['reason'];
+          return GameResultScreen(
+            sessionId: sessionId,
+            winner: winner,
+            reason: reason,
+          );
         },
       ),
     ],

@@ -37,16 +37,16 @@ class SessionMember {
     // GET /sessions/:id 응답: 위치 데이터는 lastLocation에 중첩
     final loc = m['lastLocation'] as Map<String, dynamic>?;
     return SessionMember(
-      userId:         m['user_id']         as String,
-      nickname:       m['nickname']        as String,
-      avatarUrl:      m['avatar_url']      as String?,
-      isHost:         m['is_host']         as bool? ?? false,
-      role:           m['role']            as String? ?? 'member',
+      userId: m['user_id'] as String,
+      nickname: m['nickname'] as String,
+      avatarUrl: m['avatar_url'] as String?,
+      isHost: m['is_host'] as bool? ?? false,
+      role: m['role'] as String? ?? 'member',
       sharingEnabled: m['sharing_enabled'] as bool? ?? true,
-      latitude:       (loc?['lat']         as num?)?.toDouble(),
-      longitude:      (loc?['lng']         as num?)?.toDouble(),
-      battery:        loc?['battery']      as int?,
-      status:         loc?['status']       as String? ?? 'idle',
+      latitude: (loc?['lat'] as num?)?.toDouble(),
+      longitude: (loc?['lng'] as num?)?.toDouble(),
+      battery: loc?['battery'] as int?,
+      status: loc?['status'] as String? ?? 'idle',
     );
   }
 }
@@ -92,21 +92,22 @@ class Session {
     final rawConfigs = m['module_configs'] as Map<String, dynamic>? ?? {};
 
     return Session(
-      id:            m['id']          as String,
-      name:          m['name']        as String,
-      code:          (m['session_code'] ?? m['code']) as String? ?? '',
-      isHost:        m['is_host']     as bool? ?? false,
-      memberCount:   int.tryParse(m['member_count'].toString()) ?? rawMembers.length,
-      members:       rawMembers
+      id: m['id'] as String,
+      name: m['name'] as String,
+      code: (m['session_code'] ?? m['code']) as String? ?? '',
+      isHost: m['is_host'] as bool? ?? false,
+      memberCount:
+          int.tryParse(m['member_count'].toString()) ?? rawMembers.length,
+      members: rawMembers
           .whereType<Map<String, dynamic>>()
           .map(SessionMember.fromMap)
           .toList(),
-      createdAt:     DateTime.tryParse(m['created_at'] as String? ?? '') ??
-          DateTime.now(),
-      expiresAt:     parsedExpiresAt,
+      createdAt:
+          DateTime.tryParse(m['created_at'] as String? ?? '') ?? DateTime.now(),
+      expiresAt: parsedExpiresAt,
       activeModules: rawModules.whereType<String>().toList(),
       moduleConfigs: rawConfigs,
-      gameStatus:    m['game_status'] as String? ?? 'lobby',
+      gameStatus: m['game_status'] as String? ?? 'lobby',
     );
   }
 }
@@ -141,7 +142,7 @@ enum SessionType {
     return SessionType.defaultType;
   }
 
-  int get minPlayers => this == SessionType.defaultType ? 2 : 4;
+  int get minPlayers => this == SessionType.defaultType ? 2 : 2;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -154,10 +155,7 @@ class SessionRepository {
   Future<List<Session>> getMySessions() async {
     final res = await _api.get('/sessions');
     final list = res.data['sessions'] as List<dynamic>? ?? [];
-    return list
-        .whereType<Map<String, dynamic>>()
-        .map(Session.fromMap)
-        .toList();
+    return list.whereType<Map<String, dynamic>>().map(Session.fromMap).toList();
   }
 
   // ★ 수정됨: maxMembers, activeModules 파라미터를 추가로 받고 서버(data)로 넘겨줌
@@ -173,7 +171,7 @@ class SessionRepository {
         'name': name,
         'durationHours': durationHours,
         'maxMembers': maxMembers,
-        'active_modules': activeModules,
+        'activeModules': activeModules,
       },
     );
     return Session.fromMap(res.data['session'] as Map<String, dynamic>);
@@ -188,19 +186,20 @@ class SessionRepository {
     try {
       final res = await _api.get('/sessions/$id');
       final data = res.data as Map<String, dynamic>?;
-      final sessionMap = (data?['session'] as Map<String, dynamic>?) ?? data ?? {};
+      final sessionMap =
+          (data?['session'] as Map<String, dynamic>?) ?? data ?? {};
       return Session.fromMap(sessionMap);
     } catch (e) {
       debugPrint('[SessionRepository] getSession($id) error: $e');
       return Session(
-        id:          id,
-        name:        '',
-        code:        '',
-        isHost:      false,
+        id: id,
+        name: '',
+        code: '',
+        isHost: false,
         memberCount: 0,
-        members:     [],
-        createdAt:   DateTime.now(),
-        expiresAt:   null,
+        members: [],
+        createdAt: DateTime.now(),
+        expiresAt: null,
       );
     }
   }
@@ -214,10 +213,12 @@ class SessionRepository {
   }
 
   Future<void> toggleSharing(String sessionId, bool enabled) async {
-    await _api.patch('/sessions/$sessionId/sharing', data: {'enabled': enabled});
+    await _api
+        .patch('/sessions/$sessionId/sharing', data: {'enabled': enabled});
   }
 
-  Future<void> updateMemberRole(String sessionId, String userId, String role) async {
+  Future<void> updateMemberRole(
+      String sessionId, String userId, String role) async {
     await _api.patch(
       '/sessions/$sessionId/members/$userId/role',
       data: {'role': role},
@@ -261,11 +262,11 @@ class SessionListNotifier extends AsyncNotifier<List<Session>> {
   }) async {
     try {
       final session = await ref.read(sessionRepositoryProvider).createSession(
-        name,
-        durationHours,
-        maxMembers,
-        activeModules: activeModules,
-      );
+            name,
+            durationHours,
+            maxMembers,
+            activeModules: activeModules,
+          );
 
       // 세션 생성 후 목록 새로고침
       await refresh();

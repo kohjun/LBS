@@ -53,7 +53,7 @@ export const createSession = async (hostUserId, {
        VALUES ($1, $2, $3, $4, $5,
                COALESCE($6, 'among_us'), COALESCE($7, 50), COALESCE($8, 1), COALESCE($9, 30),
                COALESCE($10, 90), COALESCE($11, 30), COALESCE($12, 3))
-       RETURNING id, session_code, name, status, created_at, expires_at,
+       RETURNING id, host_user_id, session_code, name, status, created_at, expires_at,
                  active_modules, module_configs, max_members,
                  game_type, impostor_count, kill_cooldown, discussion_time, vote_time, mission_per_crew`,
       [
@@ -313,11 +313,12 @@ export const getMySessions = async (userId) => {
 // ─────────────────────────────────────────────────────────────────────────────
 export const getSession = async (sessionId) => {
   const cached = await getCache(`session:${sessionId}`);
-  if (cached) return cached;
+  if (cached?.host_user_id) return cached;
 
   const { rows } = await query(
     `SELECT id, host_user_id, session_code, name, status,
-            created_at, expires_at, ended_at, active_modules, module_configs, max_members
+            created_at, expires_at, ended_at, active_modules, module_configs, max_members,
+            game_type, impostor_count, kill_cooldown, discussion_time, vote_time, mission_per_crew
      FROM sessions
      WHERE id = $1`,
     [sessionId]

@@ -19,7 +19,7 @@ class LobbyScreen extends ConsumerStatefulWidget {
     required this.sessionType,
   });
 
-  final String      sessionId;
+  final String sessionId;
   final SessionType sessionType;
 
   @override
@@ -27,9 +27,9 @@ class LobbyScreen extends ConsumerStatefulWidget {
 }
 
 class _LobbyScreenState extends ConsumerState<LobbyScreen> {
-  Timer?  _countdownTimer;
-  String  _countdownText = '--:--:--';
-  bool    _startingGame  = false;
+  Timer? _countdownTimer;
+  String _countdownText = '--:--:--';
+  bool _startingGame = false;
 
   // 이전 isGameStarted 값 추적 (중복 navigate 방지)
   bool _didNavigateToMap = false;
@@ -68,7 +68,7 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
   void _updateCountdown() {
     if (!mounted) return;
     final lobbyState = ref.read(lobbyProvider(widget.sessionId));
-    final expiresAt  = lobbyState.sessionInfo?.expiresAt;
+    final expiresAt = lobbyState.sessionInfo?.expiresAt;
     if (expiresAt == null) return;
 
     final diff = expiresAt.difference(DateTime.now());
@@ -87,26 +87,32 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
   @override
   Widget build(BuildContext context) {
     final lobbyState = ref.watch(lobbyProvider(widget.sessionId));
-    final authUser   = ref.watch(authProvider).valueOrNull;
+    final authUser = ref.watch(authProvider).valueOrNull;
 
     // 게임 시작 → 맵으로 이동 (한 번만)
     if (lobbyState.isGameStarted && !_didNavigateToMap) {
       _didNavigateToMap = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          context.go('/map/${widget.sessionId}');
+          context
+              .go('/game/${widget.sessionId}?type=${widget.sessionType.name}');
         }
       });
     }
 
-    final session   = lobbyState.sessionInfo;
-    final members   = lobbyState.members;
-    final isHost    = session?.isHost ?? false;
-    final myUserId  = authUser?.id ?? '';
+    final session = lobbyState.sessionInfo;
+    final members = lobbyState.members;
+    final myUserId = authUser?.id ?? '';
+    final isHost = (session?.isHost ?? false) ||
+        members.any(
+          (member) =>
+              member.userId == myUserId &&
+              (member.isHost || member.role == 'host'),
+        );
 
-    final minPlayers    = widget.sessionType.minPlayers;
-    final currentCount  = members.length;
-    final canStart      = currentCount >= minPlayers;
+    final minPlayers = widget.sessionType.minPlayers;
+    final currentCount = members.length;
+    final canStart = currentCount >= minPlayers;
 
     return Scaffold(
       appBar: AppBar(
@@ -126,7 +132,8 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
       body: lobbyState.isLoading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
-              onRefresh: () => ref.read(lobbyProvider(widget.sessionId).notifier).refresh(),
+              onRefresh: () =>
+                  ref.read(lobbyProvider(widget.sessionId).notifier).refresh(),
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.all(16),
@@ -135,17 +142,17 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
                   children: [
                     // ── 상단: 세션 정보 ─────────────────────────────────────
                     _SessionInfoSection(
-                      session:       session,
+                      session: session,
                       countdownText: _countdownText,
-                      sessionType:   widget.sessionType,
+                      sessionType: widget.sessionType,
                     ),
                     const SizedBox(height: 20),
 
                     // ── 중단: 참가자 목록 ────────────────────────────────────
                     _ParticipantListSection(
-                      members:   members,
-                      myUserId:  myUserId,
-                      isHost:    isHost,
+                      members: members,
+                      myUserId: myUserId,
+                      isHost: isHost,
                       sessionId: widget.sessionId,
                     ),
                     const SizedBox(height: 24),
@@ -159,7 +166,8 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
                           child: Text(
                             '최소 $minPlayers명 필요 (현재 $currentCount명)',
                             textAlign: TextAlign.center,
-                            style: const TextStyle(color: Colors.orange, fontSize: 13),
+                            style: const TextStyle(
+                                color: Colors.orange, fontSize: 13),
                           ),
                         ),
                       ElevatedButton.icon(
@@ -175,10 +183,12 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
                               )
                             : const Icon(Icons.play_arrow),
                         label: const Text('게임 시작',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                            style: TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.bold)),
                         style: ElevatedButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 14),
-                          backgroundColor: canStart ? Colors.green : Colors.grey,
+                          backgroundColor:
+                              canStart ? Colors.green : Colors.grey,
                           foregroundColor: Colors.white,
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
@@ -192,7 +202,8 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
                         decoration: BoxDecoration(
                           color: Colors.blue.withValues(alpha: 0.08),
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.blue.withValues(alpha: 0.2)),
+                          border: Border.all(
+                              color: Colors.blue.withValues(alpha: 0.2)),
                         ),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
@@ -276,7 +287,7 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
             onPressed: () async {
               Navigator.pop(ctx);
               final messenger = ScaffoldMessenger.of(context);
-              final router    = GoRouter.of(context);
+              final router = GoRouter.of(context);
               try {
                 await ref
                     .read(sessionRepositoryProvider)
@@ -315,16 +326,20 @@ class _SessionInfoSection extends StatelessWidget {
     required this.sessionType,
   });
 
-  final Session?    session;
-  final String      countdownText;
+  final Session? session;
+  final String countdownText;
   final SessionType sessionType;
 
   String _sessionTypeLabel() {
     switch (sessionType) {
-      case SessionType.defaultType: return '기본 위치공유';
-      case SessionType.chase:       return '공간 추격전';
-      case SessionType.verbal:      return '언어 추론';
-      case SessionType.location:    return '위치 탐색';
+      case SessionType.defaultType:
+        return '기본 위치공유';
+      case SessionType.chase:
+        return '공간 추격전';
+      case SessionType.verbal:
+        return '언어 추론';
+      case SessionType.location:
+        return '위치 탐색';
     }
   }
 
@@ -388,7 +403,8 @@ class _SessionInfoSection extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.timer_outlined, size: 16, color: Colors.orange),
+                const Icon(Icons.timer_outlined,
+                    size: 16, color: Colors.orange),
                 const SizedBox(width: 6),
                 Text(
                   '남은 시간: $countdownText',
@@ -421,23 +437,29 @@ class _ParticipantListSection extends ConsumerWidget {
   });
 
   final List<SessionMember> members;
-  final String              myUserId;
-  final bool                isHost;
-  final String              sessionId;
+  final String myUserId;
+  final bool isHost;
+  final String sessionId;
 
   Color _badgeColor(String role) {
     switch (role) {
-      case 'host':  return const Color(0xFF2196F3);
-      case 'admin': return Colors.purple;
-      default:      return Colors.grey;
+      case 'host':
+        return const Color(0xFF2196F3);
+      case 'admin':
+        return Colors.purple;
+      default:
+        return Colors.grey;
     }
   }
 
   String _badgeLabel(String role) {
     switch (role) {
-      case 'host':  return '방장';
-      case 'admin': return '관리자';
-      default:      return '멤버';
+      case 'host':
+        return '방장';
+      case 'admin':
+        return '관리자';
+      default:
+        return '멤버';
     }
   }
 
@@ -452,12 +474,13 @@ class _ParticipantListSection extends ConsumerWidget {
         ),
         const SizedBox(height: 8),
         ...members.map((member) {
-          final isMe      = member.userId == myUserId;
+          final isMe = member.userId == myUserId;
           final canManage = isHost && !member.isHost;
 
           return Card(
             margin: const EdgeInsets.only(bottom: 8),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Row(
@@ -478,24 +501,22 @@ class _ParticipantListSection extends ConsumerWidget {
                     child: Text(
                       '${member.nickname}${isMe ? ' (나)' : ''}',
                       style: TextStyle(
-                        fontWeight:
-                            isMe ? FontWeight.bold : FontWeight.normal,
+                        fontWeight: isMe ? FontWeight.bold : FontWeight.normal,
                       ),
                     ),
                   ),
 
                   // 역할 배지
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
                       color: _badgeColor(member.role),
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Text(
                       _badgeLabel(member.role),
-                      style: const TextStyle(
-                          color: Colors.white, fontSize: 11),
+                      style: const TextStyle(color: Colors.white, fontSize: 11),
                     ),
                   ),
 
@@ -536,8 +557,7 @@ class _ParticipantListSection extends ConsumerWidget {
     );
   }
 
-  void _confirmKick(
-      BuildContext context, WidgetRef ref, SessionMember member) {
+  void _confirmKick(BuildContext context, WidgetRef ref, SessionMember member) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(

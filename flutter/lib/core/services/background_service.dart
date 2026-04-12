@@ -101,7 +101,8 @@ void onStart(ServiceInstance service) async {
       // 저장된 refresh_token이 있으면 body에 실어 전송 (쿠키 없는 환경 대응)
       final storedRefreshToken = prefs.getString('bg_refresh_token');
       if (storedRefreshToken != null) {
-        final bodyBytes = utf8.encode(jsonEncode({'refreshToken': storedRefreshToken}));
+        final bodyBytes =
+            utf8.encode(jsonEncode({'refreshToken': storedRefreshToken}));
         req.headers.set(HttpHeaders.contentLengthHeader, bodyBytes.length);
         req.add(bodyBytes);
       }
@@ -113,9 +114,10 @@ void onStart(ServiceInstance service) async {
       }
       final body = await resp.transform(utf8.decoder).join();
       client.close(force: true);
-      final Map<String, dynamic> data = jsonDecode(body) as Map<String, dynamic>;
+      final Map<String, dynamic> data =
+          jsonDecode(body) as Map<String, dynamic>;
 
-      final newAccessToken  = data['accessToken']  as String?;
+      final newAccessToken = data['accessToken'] as String?;
       final newRefreshToken = data['refreshToken'] as String?;
       if (newAccessToken == null) return false;
 
@@ -198,7 +200,8 @@ void onStart(ServiceInstance service) async {
             ),
           );
 
-    positionSub = Geolocator.getPositionStream(locationSettings: settings).listen((pos) async {
+    positionSub = Geolocator.getPositionStream(locationSettings: settings)
+        .listen((pos) async {
       // 1. 정지 타이머 초기화 (움직임 감지)
       resetIdleTimer();
 
@@ -246,20 +249,26 @@ void onStart(ServiceInstance service) async {
       if (socket?.connected == true) {
         socket!.emit('location:update', {
           'sessionId': sessionId,
-          'lat':       pos.latitude,
-          'lng':       pos.longitude,
-          'accuracy':  pos.accuracy,
-          'speed':     pos.speed.isNaN ? null : pos.speed,
-          'heading':   pos.heading.isNaN ? null : pos.heading,
-          'battery':   batteryLevel,
-          'status':    moveStatus,
+          'lat': pos.latitude,
+          'lng': pos.longitude,
+          'accuracy': pos.accuracy,
+          'speed': pos.speed.isNaN ? null : pos.speed,
+          'heading': pos.heading.isNaN ? null : pos.heading,
+          'battery': batteryLevel,
+          'status': moveStatus,
         });
       }
       prevPos = pos;
 
       // 5. 지오펜스 판정
       _checkGeofencesInBg(pos, sessionId, prefs, insideGeofences);
-    });
+    }, onError: (Object error, StackTrace stackTrace) {
+      debugPrint('[Background] 위치 스트림 에러: $error');
+      positionSub?.cancel();
+      idleTimer?.cancel();
+      socket?.dispose();
+      service.stopSelf();
+    }, cancelOnError: true);
   };
 
   // 외부(FCM)로부터 기상 명령 수신
@@ -286,7 +295,8 @@ void onStart(ServiceInstance service) async {
 // ─────────────────────────────────────────────────────────────────────────────
 // 지오펜스 판정 헬퍼 함수 (Top-level)
 // ─────────────────────────────────────────────────────────────────────────────
-void _checkGeofencesInBg(Position pos, String sessionId, SharedPreferences prefs, Set<String> insideGeofences) {
+void _checkGeofencesInBg(Position pos, String sessionId,
+    SharedPreferences prefs, Set<String> insideGeofences) {
   final geofenceString = prefs.getString('geofences_$sessionId');
   if (geofenceString != null) {
     try {
@@ -311,10 +321,12 @@ void _checkGeofencesInBg(Position pos, String sessionId, SharedPreferences prefs
 
         if (isCurrentlyInside && !wasInside) {
           insideGeofences.add(gfId);
-          NotificationService().showNotification('지오펜스 진입', '$gfName 영역에 들어왔습니다!');
+          NotificationService()
+              .showNotification('지오펜스 진입', '$gfName 영역에 들어왔습니다!');
         } else if (!isCurrentlyInside && wasInside) {
           insideGeofences.remove(gfId);
-          NotificationService().showNotification('지오펜스 이탈', '$gfName 영역을 벗어났습니다.');
+          NotificationService()
+              .showNotification('지오펜스 이탈', '$gfName 영역을 벗어났습니다.');
         }
       }
     } catch (e) {
