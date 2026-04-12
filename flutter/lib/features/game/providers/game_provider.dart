@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:wakelock_plus/wakelock_plus.dart'; // Task 2: 화면 꺼짐 방지
 
 import '../../../core/services/socket_service.dart';
 import '../data/game_models.dart';
@@ -53,6 +54,8 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
     }));
 
     _subs.add(_socket.onGameEvent(SocketService.gameStarted).listen((data) {
+      // [Task 2] 게임 시작 시 WakeLock 활성화 → 화면이 꺼져 OS가 앱을 종료하는 것을 방지
+      WakelockPlus.enable();
       state = state.copyWith(
         isStarted: true,
         totalPlayers: data['playerCount'] as int? ?? 0,
@@ -193,6 +196,8 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
     );
 
     _subs.add(_socket.onGameEvent(SocketService.gameOver).listen((data) {
+      // [Task 2] 게임 종료 시 WakeLock 해제
+      WakelockPlus.disable();
       state = state.copyWith(
         gameOverWinner: data['winner'] as String,
       );
@@ -247,6 +252,8 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
 
   @override
   void dispose() {
+    // [Task 2] Provider 해제 시 WakeLock 반드시 해제 (메모리 누수 방지)
+    WakelockPlus.disable();
     for (final sub in _subs) {
       sub.cancel();
     }

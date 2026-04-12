@@ -93,7 +93,7 @@ class HomeScreen extends ConsumerWidget {
                       final s = sessions[index];
                       if (s.gameStatus == 'playing') {
                         // 게임 진행 중인 세션은 맵으로 직접 이동
-                        context.push('/map/${s.id}');
+                        context.push('/game/${s.id}?type=${s.sessionType.name}');
                       } else {
                         context.push(
                           '/lobby/${s.id}?sessionType=${s.sessionType.name}',

@@ -1,5 +1,6 @@
 // src/websocket/index.js
 import { Server } from 'socket.io';
+import { createAdapter } from '@socket.io/redis-streams-adapter'; // ★ 4. Redis Streams Adapter 추가
 import { verifySocketToken } from '../middleware/auth.js';
 import { redisClient } from '../config/redis.js';
 import * as locationService from '../services/locationService.js';
@@ -124,7 +125,7 @@ const saveGameState = async (sessionId, rawGameState, ttlSeconds = 86400) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// io 인스턴스 참조 (routes에서 WebSocket 이벤트 발행 시 사용)
+// io 인스턴스 참조
 // ─────────────────────────────────────────────────────────────────────────────
 let _io = null;
 export const getIo = () => _io;
@@ -138,15 +139,16 @@ export const createSocketServer = (httpServer) => {
       origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
       credentials: true,
     },
-    // 연결 안정성 설정
     pingTimeout: 60000,
     pingInterval: 25000,
     transports: ['websocket', 'polling'],
   });
-  const io = _io; // 함수 내 로컬 별칭 (기존 코드 호환)
+  const io = _io; 
+
+  // ★ 4. Redis Streams Adapter 장착 (OOM 방지를 위한 maxLen 10000 설정)
+  io.adapter(createAdapter(redisClient, { maxLen: 10000 }));
 
   // ── 전역 인증 미들웨어 ─────────────────────────────────────────────────
-  // 모든 소켓 연결 전에 JWT 검증
   io.use(async (socket, next) => {
     try {
       const token =
@@ -166,7 +168,6 @@ export const createSocketServer = (httpServer) => {
     const userId = socket.user.id;
     console.log(`[WS] Connected: ${socket.user.nickname} (${userId})`);
 
-    // 사용자 전용 룸 (개인 알림용)
     socket.join(`user:${userId}`);
 
     // ── session:join ──────────────────────────────────────────────────
@@ -176,7 +177,6 @@ export const createSocketServer = (httpServer) => {
       }
 
       try {
-        // 멤버 목록 확인 (세션에 속해 있는지)
         const members = await sessionService.getSessionMembers(sessionId);
         const isMember = members.some((m) => m.user_id === userId);
         if (!isMember) {
@@ -187,7 +187,6 @@ export const createSocketServer = (httpServer) => {
         socket.join(roomName);
         socket.currentSessionId = sessionId;
 
-        // 현재 세션의 모든 멤버 위치 스냅샷 전송 (초기 동기화)
         const memberIds = members.map((m) => m.user_id);
         const snapshot = await locationService.getSessionSnapshot(sessionId, memberIds);
 
@@ -197,7 +196,6 @@ export const createSocketServer = (httpServer) => {
           locations: snapshot,
         });
 
-        // 다른 멤버에게 입장 알림
         socket.to(roomName).emit(EVENTS.MEMBER_JOINED, {
           userId,
           nickname: socket.user.nickname,
@@ -213,14 +211,12 @@ export const createSocketServer = (httpServer) => {
     });
 
     // ── location:update ───────────────────────────────────────────────
-    // 클라이언트 GPS 위치 수신 → 저장 → 같은 세션 멤버에게 브로드캐스트
     socket.on(EVENTS.LOCATION_UPDATE, async (payload) => {
       const sessionId = socket.currentSessionId || payload.sessionId;
       if (!sessionId) return;
 
       const { lat, lng, accuracy, altitude, speed, heading, source, battery, status } = payload;
 
-      // 기본 유효성 검사
       if (typeof lat !== 'number' || typeof lng !== 'number') return;
       if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
 
@@ -232,7 +228,6 @@ export const createSocketServer = (httpServer) => {
           status: status || 'moving',
         });
 
-        // 근접 거리 계산용 컴팩트 위치 캐시 (5분 TTL) — 별도 키로 메인 캐시 TTL 보호
         await redisClient.set(
           `prox:${sessionId}:${userId}`,
           JSON.stringify({ lat, lng }),
@@ -246,46 +241,42 @@ export const createSocketServer = (httpServer) => {
           ...saved,
         };
 
-        // Redis Pub/Sub으로 발행 (수평 확장 대응)
-        await redisClient.publish(
-          `location:${sessionId}:${userId}`,
-          JSON.stringify(broadcastData)
-        );
-
-        // 같은 서버 인스턴스 내 즉시 브로드캐스트 (레이턴시 최소화)
+        // Realtime 브로드캐스트
         socket.to(`session:${sessionId}`).emit(EVENTS.LOCATION_CHANGED, broadcastData);
 
-        // 지오펜스 진입/이탈 감지 (비동기, 메인 흐름 블로킹 없음)
-        checkGeofences(userId, sessionId, lat, lng)
-          .then(({ entered, exited }) => {
-            if (entered.length > 0) {
-              sendGeofenceAlert({
-                sessionId,
-                userId,
-                nickname:   socket.user.nickname,
-                geofences:  entered,
-                eventType:  'enter',
-              }).catch((e) => console.error('[WS] FCM geofence enter error:', e));
-            }
-            if (exited.length > 0) {
-              sendGeofenceAlert({
-                sessionId,
-                userId,
-                nickname:   socket.user.nickname,
-                geofences:  exited,
-                eventType:  'exit',
-              }).catch((e) => console.error('[WS] FCM geofence exit error:', e));
-            }
-          })
-          .catch((e) => console.error('[WS] checkGeofences error:', e));
+        // ★ 2. 지오펜스 DB 과부하 방지 (5초 쓰로틀링)
+        const geoThrottleKey = `throttle:geo:${sessionId}:${userId}`;
+        const canCheckGeo = await redisClient.set(geoThrottleKey, '1', { NX: true, EX: 5 });
+        
+        if (canCheckGeo) {
+          checkGeofences(userId, sessionId, lat, lng)
+            .then(({ entered, exited }) => {
+              if (entered.length > 0) {
+                sendGeofenceAlert({
+                  sessionId, userId,
+                  nickname: socket.user.nickname,
+                  geofences: entered,
+                  eventType: 'enter',
+                }).catch((e) => console.error('[WS] FCM geofence enter error:', e));
+              }
+              if (exited.length > 0) {
+                sendGeofenceAlert({
+                  sessionId, userId,
+                  nickname: socket.user.nickname,
+                  geofences: exited,
+                  eventType: 'exit',
+                }).catch((e) => console.error('[WS] FCM geofence exit error:', e));
+              }
+            })
+            .catch((e) => console.error('[WS] checkGeofences error:', e));
+        }
 
       } catch (err) {
         console.error('[WS] location update error:', err);
       }
     });
 
-    // ── action:interact ───────────────────────────────────────────────
-    // 모듈 기반 게임 액션 처리 (예: PROXIMITY_KILL, VOTE, MISSION 등)
+    // ── action:interact (PROXIMITY_KILL) ───────────────────────────────
     socket.on(EVENTS.ACTION_INTERACT, async ({ sessionId: sid, actionType, targetUserId }) => {
       const sessionId = sid || socket.currentSessionId;
       if (!sessionId || !actionType) {
@@ -309,7 +300,6 @@ export const createSocketServer = (httpServer) => {
             return socket.emit(EVENTS.MODULE_ERROR, { code: 'MISSING_FIELDS' });
           }
 
-          // 두 유저의 최신 위치 조회: prox 캐시 → 메인 캐시 → Hash 폴백
           const resolveLocation = async (uid) => {
             const prox = await redisClient.get(`prox:${sessionId}:${uid}`);
             if (prox) return JSON.parse(prox);
@@ -333,7 +323,6 @@ export const createSocketServer = (httpServer) => {
             });
           }
 
-          // Haversine 거리 계산 (미터)
           const toRad = (d) => (d * Math.PI) / 180;
           const R = 6371000;
           const dLat = toRad(targetLoc.lat - actorLoc.lat);
@@ -350,20 +339,17 @@ export const createSocketServer = (httpServer) => {
             });
           }
 
-          // 중복 처리 방지: SET NX 2초 락
-          const lockKey = `kill_lock:${sessionId}:${userId}:${targetUserId}`;
+          // ★ 1. 동시 타격(Kill) 방어 락: '타겟(피해자)' 기준으로 2초간 락 설정
+          const lockKey = `target_lock:${sessionId}:${targetUserId}`;
           const locked = await redisClient.set(lockKey, '1', { NX: true, EX: 2 });
-          if (!locked) return; // 이미 처리 중인 킬 이벤트
+          if (!locked) return; // 이미 다른 사람에게 처리 중 (중복 무시)
 
           // ── Tag 모듈 활성 시: 킬 대신 태그 전달 ────────────────────────
           if (activeModules.includes('tag')) {
             await redisClient.set(`tag:${sessionId}:tagger`, userId, { EX: 86400 });
 
             socket.emit(EVENTS.ACTION_RESULT, {
-              actionType,
-              sessionId,
-              targetUserId,
-              status: 'success',
+              actionType, sessionId, targetUserId, status: 'success',
             });
 
             io.to(`session:${sessionId}`).emit(EVENTS.TAG_TRANSFERRED, {
@@ -372,30 +358,22 @@ export const createSocketServer = (httpServer) => {
               sessionId,
               timestamp:        Date.now(),
             });
-
             return;
           }
 
           // ── 일반 킬 처리 ─────────────────────────────────────────────────
-          // 탈락 상태를 Redis에 영속 (24시간)
           await redisClient.set(`eliminated:${sessionId}:${targetUserId}`, '1', { EX: 86400 });
 
-          // 액터에게 성공 응답
           socket.emit(EVENTS.ACTION_RESULT, {
-            actionType,
-            sessionId,
-            targetUserId,
-            status: 'success',
+            actionType, sessionId, targetUserId, status: 'success',
           });
 
-          // 타겟 개인 룸에 제거 이벤트 전송
           io.to(`user:${targetUserId}`).emit('proximity:killed', {
             killedBy: userId,
             nickname: socket.user.nickname,
             sessionId,
           });
 
-          // 세션 전체에 탈락 브로드캐스트
           io.to(`session:${sessionId}`).emit(EVENTS.PLAYER_ELIMINATED, {
             userId:    targetUserId,
             killedBy:  userId,
@@ -404,7 +382,6 @@ export const createSocketServer = (httpServer) => {
             timestamp: Date.now(),
           });
 
-          // 게임 상태 갱신 (게임이 진행 중인 경우만)
           const gameRaw = await redisClient.get(`game:${sessionId}`);
           if (gameRaw) {
             const gameState = normalizeGameState(JSON.parse(gameRaw));
@@ -414,7 +391,6 @@ export const createSocketServer = (httpServer) => {
               );
 
               if (gameState.alivePlayerIds.length === 1) {
-                // 마지막 생존자 → 게임 종료
                 gameState.status = 'finished';
                 gameState.finishedAt = Date.now();
                 await saveGameState(sessionId, gameState);
@@ -424,7 +400,6 @@ export const createSocketServer = (httpServer) => {
                   timestamp: Date.now(),
                 });
               } else {
-                // 게임 계속 진행
                 await saveGameState(sessionId, gameState);
                 io.to(`session:${sessionId}`).emit(EVENTS.GAME_STATE_UPDATE, {
                   sessionId,
@@ -447,11 +422,7 @@ export const createSocketServer = (httpServer) => {
       const sessionId = sid || socket.currentSessionId;
       if (!sessionId) return;
       try {
-        await startGameForSession({
-          io,
-          sessionId,
-          requesterUserId: userId,
-        });
+        await startGameForSession({ io, sessionId, requesterUserId: userId });
       } catch (err) {
         console.error('[WS] game:start error:', err);
         socket.emit(EVENTS.ERROR, {
@@ -461,14 +432,14 @@ export const createSocketServer = (httpServer) => {
       }
     });
 
-    // ── game:kill ─────────────────────────────────────────────────────
+    // ── game:kill (어몽어스 킬) ─────────────────────────────────────────
     socket.on(EVENTS.GAME_KILL, async ({ sessionId: sid, targetUserId }) => {
       const sessionId = sid || socket.currentSessionId;
       if (!sessionId || !targetUserId) return;
       try {
         const gameRaw = await redisClient.get(`game:${sessionId}`);
         if (!gameRaw) {
-          return respond({ ok: false, error: 'GAME_NOT_STARTED' });
+          return socket.emit(EVENTS.ERROR, { code: 'GAME_NOT_STARTED' });
         }
         const gameState = normalizeGameState(JSON.parse(gameRaw));
 
@@ -478,7 +449,11 @@ export const createSocketServer = (httpServer) => {
           return socket.emit(EVENTS.ERROR, { code: 'KILL_COOLDOWN' });
         }
 
-        // 킬 처리
+        // ★ 1. 동시 타격(Kill) 방어 락: '타겟' 기준으로 2초간 락 (어몽어스 모드)
+        const lockKey = `target_lock:${sessionId}:${targetUserId}`;
+        const locked = await redisClient.set(lockKey, '1', { NX: true, EX: 2 });
+        if (!locked) return; // 이미 죽은 처리 중
+
         gameState.alivePlayerIds = gameState.alivePlayerIds.filter((id) => id !== targetUserId);
         gameState.killLog.push({ killerId: userId, victimId: targetUserId, at: Date.now() });
         await saveGameState(sessionId, gameState);
@@ -490,9 +465,9 @@ export const createSocketServer = (httpServer) => {
         });
         socket.emit(EVENTS.GAME_KILL_CONFIRMED, { ok: true });
 
-        // 승리 조건 체크
         const aliveImpostors = gameState.impostors.filter((id) => gameState.alivePlayerIds.includes(id));
         const aliveCrew = gameState.alivePlayerIds.filter((id) => !gameState.impostors.includes(id));
+        
         if (aliveImpostors.length === 0) {
           io.to(`session:${sessionId}`).emit(EVENTS.GAME_OVER, { winner: 'crew', reason: 'impostors_ejected' });
         } else if (aliveImpostors.length >= aliveCrew.length) {
@@ -520,18 +495,13 @@ export const createSocketServer = (httpServer) => {
           sessionService.getSession(sessionId),
           sessionService.getSessionMembers(sessionId),
         ]);
-        if (!session) {
-          return respond({ ok: false, error: 'SESSION_NOT_FOUND' });
-        }
+        if (!session) return respond({ ok: false, error: 'SESSION_NOT_FOUND' });
+        
         session.aliveMembers = members.filter((member) =>
           gameState.alivePlayerIds.includes(member.user_id),
         );
 
-        VoteSystem.startMeeting(session, {
-          callerId: userId,
-          bodyId:   null,
-          reason:   'emergency',
-        });
+        VoteSystem.startMeeting(session, { callerId: userId, bodyId: null, reason: 'emergency' });
         respond({ ok: true });
       } catch (err) {
         console.error('[WS] game:emergency error:', err);
@@ -543,38 +513,26 @@ export const createSocketServer = (httpServer) => {
     socket.on(EVENTS.GAME_REPORT, async ({ sessionId: sid, bodyId }, cb) => {
       const sessionId = sid || socket.currentSessionId;
       const respond = typeof cb === 'function' ? cb : () => {};
-      if (!sessionId || !bodyId) {
-        return respond({ ok: false, error: 'MISSING_FIELDS' });
-      }
+      if (!sessionId || !bodyId) return respond({ ok: false, error: 'MISSING_FIELDS' });
       try {
         const gameRaw = await redisClient.get(`game:${sessionId}`);
-        if (!gameRaw) {
-          return respond({ ok: false, error: 'GAME_NOT_STARTED' });
-        }
+        if (!gameRaw) return respond({ ok: false, error: 'GAME_NOT_STARTED' });
         const gameState = normalizeGameState(JSON.parse(gameRaw));
-        if (!gameState.alivePlayerIds.includes(userId)) {
-          return respond({ ok: false, error: 'ONLY_ALIVE_PLAYERS' });
-        }
-        if (gameState.alivePlayerIds.includes(bodyId)) {
-          return respond({ ok: false, error: 'BODY_NOT_FOUND' });
-        }
+        
+        if (!gameState.alivePlayerIds.includes(userId)) return respond({ ok: false, error: 'ONLY_ALIVE_PLAYERS' });
+        if (gameState.alivePlayerIds.includes(bodyId)) return respond({ ok: false, error: 'BODY_NOT_FOUND' });
 
         const [session, members] = await Promise.all([
           sessionService.getSession(sessionId),
           sessionService.getSessionMembers(sessionId),
         ]);
-        if (!session) {
-          return respond({ ok: false, error: 'SESSION_NOT_FOUND' });
-        }
+        if (!session) return respond({ ok: false, error: 'SESSION_NOT_FOUND' });
+        
         session.aliveMembers = members.filter((member) =>
           gameState.alivePlayerIds.includes(member.user_id),
         );
 
-        VoteSystem.startMeeting(session, {
-          callerId: userId,
-          bodyId,
-          reason:   'report',
-        });
+        VoteSystem.startMeeting(session, { callerId: userId, bodyId, reason: 'report' });
         respond({ ok: true });
       } catch (err) {
         console.error('[WS] game:report error:', err);
@@ -603,13 +561,9 @@ export const createSocketServer = (httpServer) => {
         const result = await MissionSystem.completeMission(sessionId, userId, missionId);
         if (!result) return;
 
-        socket.emit(EVENTS.GAME_MISSION_PROGRESS, {
-          missionId,
-          ...await MissionSystem.getProgressBar(sessionId),
-        });
-        io.to(`session:${sessionId}`).emit(EVENTS.GAME_MISSION_PROGRESS,
-          await MissionSystem.getProgressBar(sessionId)
-        );
+        const progressData = await MissionSystem.getProgressBar(sessionId);
+        socket.emit(EVENTS.GAME_MISSION_PROGRESS, { missionId, ...progressData });
+        io.to(`session:${sessionId}`).emit(EVENTS.GAME_MISSION_PROGRESS, progressData);
 
         if (result.allDone) {
           io.to(`session:${sessionId}`).emit(EVENTS.GAME_OVER, { winner: 'crew', reason: 'all_missions_done' });
@@ -631,6 +585,13 @@ export const createSocketServer = (httpServer) => {
         return respond({ ok: false, error: '질문이 너무 깁니다. (최대 200자)' });
       }
 
+      // ★ 3. AI 쿨타임 쓰로틀링 (도배 방지 및 API 요금 최적화: 5초)
+      const aiLimitKey = `throttle:ai:${sessionId}:${userId}`;
+      const canAsk = await redisClient.set(aiLimitKey, '1', { NX: true, EX: 5 });
+      if (!canAsk) {
+        return respond({ ok: false, error: 'AI 마스터가 답변을 준비 중입니다. 잠시 후 다시 질문해주세요.' });
+      }
+
       try {
         const gameRaw = await redisClient.get(`game:${sessionId}`);
         if (!gameRaw) return respond({ ok: false, error: '게임이 시작되지 않았습니다.' });
@@ -638,7 +599,6 @@ export const createSocketServer = (httpServer) => {
         const gameState  = normalizeGameState(JSON.parse(gameRaw));
         const isImpostor = gameState.impostors.includes(userId);
 
-        // AIDirector.ask()에 넘길 room/player 형태로 래핑
         const roomLike = {
           roomId:    sessionId,
           gameType:  'among_us',
@@ -671,13 +631,7 @@ export const createSocketServer = (httpServer) => {
           errorCode = null,
         } = await AIDirector.ask(roomLike, playerLike, question);
 
-        socket.emit(EVENTS.GAME_AI_REPLY, {
-          question,
-          answer,
-          sources,
-          isError,
-          errorCode,
-        });
+        socket.emit(EVENTS.GAME_AI_REPLY, { question, answer, sources, isError, errorCode });
 
       } catch (err) {
         console.error('[WS] game:ai_ask error:', err);
@@ -692,7 +646,6 @@ export const createSocketServer = (httpServer) => {
     });
 
     // ── game:request_state ────────────────────────────────────────────
-    // 재연결 등에서 현재 게임 상태를 요청하는 소켓에게만 응답
     socket.on(EVENTS.GAME_REQUEST_STATE, async ({ sessionId: sid } = {}) => {
       const sessionId = sid || socket.currentSessionId;
       if (!sessionId) return;
@@ -700,10 +653,7 @@ export const createSocketServer = (httpServer) => {
       try {
         const gameRaw = await redisClient.get(`game:${sessionId}`);
         if (!gameRaw) {
-          return socket.emit(EVENTS.GAME_STATE_UPDATE, {
-            sessionId,
-            status: 'none',
-          });
+          return socket.emit(EVENTS.GAME_STATE_UPDATE, { sessionId, status: 'none' });
         }
 
         const [gameState, taggerId] = await Promise.all([
@@ -724,13 +674,12 @@ export const createSocketServer = (httpServer) => {
           team:           isImpostor ? 'impostor' : 'crew',
           impostors:      isImpostor ? gameState.impostors : [],
         });
-
       } catch (err) {
         console.error('[WS] game:request_state error:', err);
       }
     });
 
-    // ── round:start ───────────────────────────────────────────────────
+    // ── round:start / vote:open / vote:cast 등 기존 로직 생략 없이 유지 ───
     socket.on(EVENTS.ROUND_START, async ({ sessionId: sid } = {}) => {
       const sessionId = sid || socket.currentSessionId;
       if (!sessionId) return socket.emit(EVENTS.MODULE_ERROR, { code: 'MISSING_SESSION_ID' });
@@ -747,27 +696,16 @@ export const createSocketServer = (httpServer) => {
         const roundNumber = (parseInt(currentRaw ?? '0', 10) || 0) + 1;
         await redisClient.set(`round:${sessionId}:current`, String(roundNumber), { EX: 86400 });
 
-        const roundState = {
-          roundNumber,
-          phase:     'discussing',
-          startedAt: Date.now(),
-          votes:     {},
-        };
-        await redisClient.set(
-          `round:${sessionId}:${roundNumber}`,
-          JSON.stringify(roundState),
-          { EX: 86400 }
-        );
+        const roundState = { roundNumber, phase: 'discussing', startedAt: Date.now(), votes: {} };
+        await redisClient.set(`round:${sessionId}:${roundNumber}`, JSON.stringify(roundState), { EX: 86400 });
 
         io.to(`session:${sessionId}`).emit(EVENTS.ROUND_START, { sessionId, ...roundState });
-
       } catch (err) {
         console.error('[WS] round:start error:', err);
         socket.emit(EVENTS.MODULE_ERROR, { code: 'INTERNAL_ERROR' });
       }
     });
 
-    // ── vote:open ─────────────────────────────────────────────────────
     socket.on(EVENTS.VOTE_OPEN, async ({ sessionId: sid, prompt } = {}) => {
       const sessionId = sid || socket.currentSessionId;
       if (!sessionId) return socket.emit(EVENTS.MODULE_ERROR, { code: 'MISSING_SESSION_ID' });
@@ -786,25 +724,15 @@ export const createSocketServer = (httpServer) => {
 
         const roundState = JSON.parse(roundRaw);
         roundState.phase = 'voting';
-        await redisClient.set(
-          `round:${sessionId}:${roundNumber}`,
-          JSON.stringify(roundState),
-          { EX: 86400 }
-        );
+        await redisClient.set(`round:${sessionId}:${roundNumber}`, JSON.stringify(roundState), { EX: 86400 });
 
-        io.to(`session:${sessionId}`).emit(EVENTS.VOTE_OPEN, {
-          sessionId,
-          roundNumber,
-          prompt: prompt ?? '',
-        });
-
+        io.to(`session:${sessionId}`).emit(EVENTS.VOTE_OPEN, { sessionId, roundNumber, prompt: prompt ?? '' });
       } catch (err) {
         console.error('[WS] vote:open error:', err);
         socket.emit(EVENTS.MODULE_ERROR, { code: 'INTERNAL_ERROR' });
       }
     });
 
-    // ── vote:cast ─────────────────────────────────────────────────────
     socket.on(EVENTS.VOTE_CAST, async ({ sessionId: sid, roundNumber, targetUserId } = {}) => {
       const sessionId = sid || socket.currentSessionId;
       if (!sessionId || roundNumber == null || !targetUserId) {
@@ -817,27 +745,17 @@ export const createSocketServer = (httpServer) => {
 
         const roundState = JSON.parse(roundRaw);
         roundState.votes[userId] = targetUserId;
-        await redisClient.set(
-          `round:${sessionId}:${roundNumber}`,
-          JSON.stringify(roundState),
-          { EX: 86400 }
-        );
+        await redisClient.set(`round:${sessionId}:${roundNumber}`, JSON.stringify(roundState), { EX: 86400 });
 
         const votedCount = Object.keys(roundState.votes).length;
-        io.to(`session:${sessionId}`).emit(EVENTS.VOTE_CAST, {
-          sessionId,
-          roundNumber,
-          votedCount,
-        });
+        io.to(`session:${sessionId}`).emit(EVENTS.VOTE_CAST, { sessionId, roundNumber, votedCount });
 
-        // ── 자동 집계: 모든 생존자가 투표 완료 ──────────────────────────
         const gameRaw = await redisClient.get(`game:${sessionId}`);
         if (!gameRaw) return;
 
         const gameState = normalizeGameState(JSON.parse(gameRaw));
         if (votedCount < gameState.alivePlayerIds.length) return;
 
-        // 득표 집계
         const tally = {};
         for (const vote of Object.values(roundState.votes)) {
           tally[vote] = (tally[vote] ?? 0) + 1;
@@ -848,12 +766,7 @@ export const createSocketServer = (httpServer) => {
           Object.keys(tally)[0]
         );
 
-        // 탈락 처리
-        await redisClient.set(
-          `eliminated:${sessionId}:${eliminatedUserId}`,
-          '1',
-          { EX: 86400 }
-        );
+        await redisClient.set(`eliminated:${sessionId}:${eliminatedUserId}`, '1', { EX: 86400 });
 
         gameState.alivePlayerIds = gameState.alivePlayerIds.filter((id) => id !== eliminatedUserId);
         if (gameState.alivePlayerIds.length <= 1) {
@@ -863,15 +776,11 @@ export const createSocketServer = (httpServer) => {
         await saveGameState(sessionId, gameState);
 
         io.to(`session:${sessionId}`).emit(EVENTS.VOTE_RESULT, {
-          sessionId,
-          roundNumber,
-          eliminatedUserId,
-          voteBreakdown: tally,
+          sessionId, roundNumber, eliminatedUserId, voteBreakdown: tally,
         });
 
         io.to(`session:${sessionId}`).emit(EVENTS.GAME_STATE_UPDATE, {
-          sessionId,
-          status: gameState.status,
+          sessionId, status: gameState.status,
           aliveCount: gameState.alivePlayerIds.length,
           alivePlayerIds: gameState.alivePlayerIds,
         });
@@ -882,72 +791,44 @@ export const createSocketServer = (httpServer) => {
       }
     });
 
-    // ── status:update ─────────────────────────────────────────────────
-    // 이동중 / 정지 / SOS 등 상태 변경
+    // ── status / sos / disconnect 등 공통 기능 유지 ────────────────────
     socket.on(EVENTS.STATUS_UPDATE, async ({ sessionId: sid, status, battery }) => {
       const sessionId = sid || socket.currentSessionId;
       if (!sessionId) return;
-
       const validStatuses = ['moving', 'stopped', 'sos', 'idle'];
       if (!validStatuses.includes(status)) return;
-
-      const payload = {
-        userId,
-        nickname: socket.user.nickname,
-        status,
-        battery,
-        timestamp: Date.now(),
-      };
-
-      io.to(`session:${sessionId}`).emit(EVENTS.STATUS_CHANGED, payload);
+      io.to(`session:${sessionId}`).emit(EVENTS.STATUS_CHANGED, {
+        userId, nickname: socket.user.nickname, status, battery, timestamp: Date.now(),
+      });
     });
 
-    // ── sos:trigger ───────────────────────────────────────────────────
-    // 긴급 SOS 발송 → 세션 전체에 고우선순위 알림
     socket.on(EVENTS.SOS_TRIGGER, async ({ sessionId: sid, message, lat, lng }) => {
       const sessionId = sid || socket.currentSessionId;
       if (!sessionId) return;
-
-      console.warn(`[SOS] User ${userId} triggered SOS in session ${sessionId}`);
-
-      const sosPayload = {
-        userId,
-        nickname: socket.user.nickname,
+      io.to(`session:${sessionId}`).emit(EVENTS.SOS_ALERT, {
+        userId, nickname: socket.user.nickname,
         message: message || '긴급 상황 발생!',
         location: lat && lng ? { lat, lng } : null,
         timestamp: Date.now(),
-      };
-
-      // 세션 전체에 SOS 브로드캐스트 (본인 포함)
-      io.to(`session:${sessionId}`).emit(EVENTS.SOS_ALERT, sosPayload);
-
-      // FCM 고우선순위 푸시: 백그라운드 멤버에게도 전달
+      });
       sendSosAlert({
-        sessionId,
-        triggeredByUserId: userId,
-        nickname: socket.user.nickname,
-        location: lat && lng ? { lat, lng } : null,
-        sosMessage: message || '긴급 상황 발생!',
+        sessionId, triggeredByUserId: userId, nickname: socket.user.nickname,
+        location: lat && lng ? { lat, lng } : null, sosMessage: message || '긴급 상황 발생!',
       }).catch((err) => console.error('[WS] FCM SOS error:', err));
     });
 
-    // ── disconnect ────────────────────────────────────────────────────
     socket.on('disconnect', (reason) => {
       console.log(`[WS] Disconnected: ${socket.user.nickname} - ${reason}`);
-
       const sessionId = socket.currentSessionId;
       if (sessionId) {
         socket.to(`session:${sessionId}`).emit(EVENTS.MEMBER_LEFT, {
-          userId,
-          nickname: socket.user.nickname,
-          reason,
-          timestamp: Date.now(),
+          userId, nickname: socket.user.nickname, reason, timestamp: Date.now(),
         });
       }
     });
   });
 
-  // ── VoteSystem EventBus 구독 ──────────────────────────────────────────
+  // ── VoteSystem EventBus 구독 (회의 로직 등) ──────────────────────────
   EventBus.on('meeting_started', async ({ session, voteSession }) => {
     io.to(`session:${session.id}`).emit(EVENTS.GAME_MEETING_STARTED, {
       callerId:       voteSession.callerId,
@@ -955,15 +836,11 @@ export const createSocketServer = (httpServer) => {
       reason:         voteSession.reason,
       discussionTime: voteSession.discussionTime,
     });
-
-    // AI 회의 시작 멘트
     try {
       const caller = { nickname: voteSession.callerId };
       const body   = voteSession.bodyId ? { nickname: voteSession.bodyId, zone: '' } : null;
       const msg = await AIDirector.onMeeting(session, caller, voteSession.reason, body);
-      if (msg) io.to(`session:${session.id}`).emit(EVENTS.GAME_AI_MESSAGE, {
-        type: 'announcement', message: msg,
-      });
+      if (msg) io.to(`session:${session.id}`).emit(EVENTS.GAME_AI_MESSAGE, { type: 'announcement', message: msg });
     } catch (e) {
       console.error('[AI] 회의 안내 실패:', e.message);
     }
@@ -974,120 +851,69 @@ export const createSocketServer = (httpServer) => {
   });
 
   EventBus.on('voting_started', ({ session, voteSession }) => {
-    io.to(`session:${session.id}`).emit(EVENTS.GAME_VOTING_STARTED, {
-      voteTime: voteSession.voteTime,
-    });
+    io.to(`session:${session.id}`).emit(EVENTS.GAME_VOTING_STARTED, { voteTime: voteSession.voteTime });
   });
 
   EventBus.on('pre_vote_submitted', ({ sessionId, count, totalPlayers }) => {
-    io.to(`session:${sessionId}`).emit(EVENTS.GAME_PRE_VOTE_SUBMITTED, {
-      totalPreVotes: count,
-      totalPlayers,
-    });
+    io.to(`session:${sessionId}`).emit(EVENTS.GAME_PRE_VOTE_SUBMITTED, { totalPreVotes: count, totalPlayers });
   });
 
   EventBus.on('vote_submitted', ({ sessionId, count, totalPlayers }) => {
-    io.to(`session:${sessionId}`).emit(EVENTS.GAME_VOTE_SUBMITTED, {
-      totalVotes: count,
-      totalPlayers,
-    });
+    io.to(`session:${sessionId}`).emit(EVENTS.GAME_VOTE_SUBMITTED, { totalVotes: count, totalPlayers });
   });
 
   EventBus.on('vote_result', async ({ session, result, ejected, ejectedMember }) => {
     let nextResult = { ...result };
-    let ejectedPayload = ejected
-      ? {
-          userId: ejected,
-          nickname: ejectedMember?.nickname ?? ejected,
-        }
-      : null;
+    let ejectedPayload = ejected ? { userId: ejected, nickname: ejectedMember?.nickname ?? ejected } : null;
 
     try {
       const gameRaw = await redisClient.get(`game:${session.id}`);
       if (gameRaw) {
         const gameState = normalizeGameState(JSON.parse(gameRaw));
-
         if (ejected) {
           const wasImpostor = gameState.impostors.includes(ejected);
-          nextResult = {
-            ...nextResult,
-            wasImpostor,
-          };
-
+          nextResult = { ...nextResult, wasImpostor };
           if (gameState.alivePlayerIds.includes(ejected)) {
-            gameState.alivePlayerIds = gameState.alivePlayerIds.filter(
-              (id) => id !== ejected,
-            );
+            gameState.alivePlayerIds = gameState.alivePlayerIds.filter((id) => id !== ejected);
           }
-
-          const aliveImpostors = gameState.impostors.filter((id) =>
-            gameState.alivePlayerIds.includes(id),
-          );
-          const aliveCrew = gameState.alivePlayerIds.filter(
-            (id) => !gameState.impostors.includes(id),
-          );
+          const aliveImpostors = gameState.impostors.filter((id) => gameState.alivePlayerIds.includes(id));
+          const aliveCrew = gameState.alivePlayerIds.filter((id) => !gameState.impostors.includes(id));
 
           let gameOverPayload = null;
           if (aliveImpostors.length === 0) {
             gameState.status = 'finished';
             gameState.finishedAt = Date.now();
-            gameOverPayload = {
-              winner: 'crew',
-              reason: 'impostors_ejected',
-            };
+            gameOverPayload = { winner: 'crew', reason: 'impostors_ejected' };
           } else if (aliveImpostors.length >= aliveCrew.length) {
             gameState.status = 'finished';
             gameState.finishedAt = Date.now();
-            gameOverPayload = {
-              winner: 'impostor',
-              reason: 'outnumbered',
-            };
+            gameOverPayload = { winner: 'impostor', reason: 'outnumbered' };
           }
 
           await saveGameState(session.id, gameState);
-
           io.to(`session:${session.id}`).emit(EVENTS.GAME_STATE_UPDATE, {
-            sessionId: session.id,
-            status: gameState.status,
-            aliveCount: gameState.alivePlayerIds.length,
-            alivePlayerIds: gameState.alivePlayerIds,
+            sessionId: session.id, status: gameState.status,
+            aliveCount: gameState.alivePlayerIds.length, alivePlayerIds: gameState.alivePlayerIds,
           });
-
-          if (gameOverPayload != null) {
-            io.to(`session:${session.id}`).emit(
-              EVENTS.GAME_OVER,
-              gameOverPayload,
-            );
-          }
+          if (gameOverPayload != null) io.to(`session:${session.id}`).emit(EVENTS.GAME_OVER, gameOverPayload);
         }
       }
     } catch (e) {
       console.error('[WS] vote_result sync error:', e);
     }
-    io.to(`session:${session.id}`).emit(EVENTS.GAME_VOTE_RESULT, {
-      ...nextResult,
-      ejected: ejectedPayload,
-    });
+    
+    io.to(`session:${session.id}`).emit(EVENTS.GAME_VOTE_RESULT, { ...nextResult, ejected: ejectedPayload });
 
-    // AI 투표 결과 해설
     try {
-      const msg = await AIDirector.onVoteResult(
-        session,
-        nextResult,
-        ejectedPayload,
-      );
-      if (msg) io.to(`session:${session.id}`).emit(EVENTS.GAME_AI_MESSAGE, {
-        type: 'vote_result', message: msg,
-      });
+      const msg = await AIDirector.onVoteResult(session, nextResult, ejectedPayload);
+      if (msg) io.to(`session:${session.id}`).emit(EVENTS.GAME_AI_MESSAGE, { type: 'vote_result', message: msg });
     } catch (e) {
       console.error('[AI] 투표 결과 해설 실패:', e.message);
     }
   });
 
   EventBus.on('meeting_ended', ({ session }) => {
-    io.to(`session:${session.id}`).emit(EVENTS.GAME_MEETING_ENDED, {
-      message: '게임으로 돌아갑니다.',
-    });
+    io.to(`session:${session.id}`).emit(EVENTS.GAME_MEETING_ENDED, { message: '게임으로 돌아갑니다.' });
   });
 
   return io;

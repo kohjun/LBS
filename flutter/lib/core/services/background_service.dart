@@ -271,11 +271,28 @@ void onStart(ServiceInstance service) async {
     }, cancelOnError: true);
   };
 
-  // 외부(FCM)로부터 기상 명령 수신
+  // 외부(FCM)로부터 기상 명령 수신 — service.invoke() 경로 (메인 Isolate용)
   service.on('wakeUp').listen((event) {
-    debugPrint('[Background] 기상 명령 수신! 소켓 재연결');
+    debugPrint('[Background] 기상 명령 수신 (invoke 경로)! 소켓 재연결');
     connectSocket();
     startTracking(idle: false);
+  });
+
+  // SharedPreferences 플래그 폴링 — FCM 백그라운드 핸들러에서 오는 기상 명령용
+  // (FCM 핸들러는 별도 Isolate에서 실행되므로 invoke() 대신 플래그를 사용합니다)
+  Timer.periodic(const Duration(seconds: 30), (_) async {
+    try {
+      await prefs.reload(); // 외부 변경 사항 반영
+      final wakeupRequested = prefs.getBool('bg_wakeup_requested') ?? false;
+      if (wakeupRequested) {
+        await prefs.setBool('bg_wakeup_requested', false); // 플래그 즉시 초기화
+        debugPrint('[Background] FCM wakeUp 플래그 감지! 소켓 재연결 및 추적 재개');
+        connectSocket();
+        startTracking(idle: false);
+      }
+    } catch (e) {
+      debugPrint('[Background] wakeUp 플래그 체크 실패: $e');
+    }
   });
 
   // 서비스 중지 명령이 들어오면 전부 정리하고 종료

@@ -111,6 +111,24 @@ class GpsLocationService {
   // 위치 업데이트 처리
   // ─────────────────────────────────────────────────────────────────────────
   void _onPositionUpdate(Position position) {
+    // ── [Anti-Cheat] Mock(가상) 위치 감지 ────────────────────────────────────
+    // position.isMocked: Android의 "개발자 옵션 > 가상 위치" 또는
+    // iOS의 시뮬레이터/허가되지 않은 앱을 통한 위치 조작 여부를 반환합니다.
+    if (position.isMocked) {
+      debugPrint('[GPS] ⚠️ Mock(가상) 위치 감지! 치트 신고 후 추적을 중단합니다.');
+      SocketService().emit(
+        SocketEvents.actionInteract,
+        {
+          'sessionId': _sessionId,
+          'actionType': 'CHEAT_DETECTED',
+        },
+      );
+      // 구독 취소는 현재 콜백 완료 후 microtask로 처리 (재진입 방지)
+      Future.microtask(stopTracking);
+      return;
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     _lastPosition = position;
     _positionController.add(position);
 
@@ -212,9 +230,25 @@ class GpsLocationService {
   // 현재 위치 즉시 조회 (일회성)
   // ─────────────────────────────────────────────────────────────────────────
   Future<Position> getCurrentPosition() async {
-    return Geolocator.getCurrentPosition(
+    final position = await Geolocator.getCurrentPosition(
       desiredAccuracy: LocationAccuracy.high,
     );
+
+    // ── [Anti-Cheat] 일회성 조회에도 Mock 위치 검사 적용 ─────────────────────
+    if (position.isMocked) {
+      debugPrint('[GPS] ⚠️ Mock(가상) 위치 감지! (일회성 getCurrentPosition)');
+      SocketService().emit(
+        SocketEvents.actionInteract,
+        {
+          'sessionId': _sessionId,
+          'actionType': 'CHEAT_DETECTED',
+        },
+      );
+      throw Exception('MOCK_LOCATION_DETECTED');
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    return position;
   }
 
   bool get isTracking => _isTracking;

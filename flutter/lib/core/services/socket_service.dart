@@ -446,6 +446,14 @@ class SocketService {
     _socket?.emit(SocketEvents.gameRequestState, {'sessionId': sessionId});
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // 범용 emit – 직접 이벤트를 발행해야 하는 경우 (Anti-Cheat, 수동 sync 등)
+  // ─────────────────────────────────────────────────────────────────────────
+  void emit(String event, [Map<String, dynamic>? data]) {
+    if (!_isConnected) return;
+    _socket?.emit(event, data);
+  }
+
   void interactAction({
     required String sessionId,
     required String actionType,

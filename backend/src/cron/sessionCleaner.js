@@ -5,8 +5,8 @@ import { query, withTransaction } from '../config/database.js';
 import { delCache, delPattern } from '../config/redis.js';
 
 export const startSessionCleaner = (io) => {
-// 매 1시간마다 실행 ('0 * * * *')
-cron.schedule('* * * * *', async () => {
+  // 매 10분마다 실행 (성능을 위해 1분 -> 10분 단위로 조정 권장)
+  cron.schedule('*/10 * * * *', async () => {
     try {
       // 1. 만료 시간이 지났고 아직 'active' 상태인 세션 찾기
       const { rows: expiredSessions } = await query(`
@@ -47,10 +47,29 @@ cron.schedule('* * * * *', async () => {
           `, [sessionId]);
         });
 
-        // 3. Redis 캐시 데이터 삭제
+        // 3. Redis 캐시 및 모든 게임 관련 찌꺼기 데이터(Zombie Data) 삭제
+        // 단일 키 삭제
         await delCache(`session:${sessionId}`);
         await delCache(`session:code:${sessionCode}`);
-        await delPattern(`location:${sessionId}:*`);
+        await delCache(`game:${sessionId}`);
+        
+        // 패턴 키 일괄 삭제 (기존 위치 캐시 + 신규 게임 모듈 캐시들)
+        const patternsToDelete = [
+          `location:${sessionId}:*`,
+          `prox:${sessionId}:*`,
+          `eliminated:${sessionId}:*`,
+          `target_lock:${sessionId}:*`,
+          `kill_lock:${sessionId}:*`,
+          `round:${sessionId}:*`,
+          `tag:${sessionId}:*`,
+          `throttle:ai:${sessionId}:*`,
+          `throttle:geo:${sessionId}:*`
+        ];
+
+        // 병렬로 모든 패턴 삭제 실행
+        await Promise.all(
+          patternsToDelete.map(pattern => delPattern(pattern))
+        );
 
         // 4. Socket.io로 클라이언트에 만료 알림 발송 및 소켓 강제 퇴장
         if (io) {
@@ -67,7 +86,7 @@ cron.schedule('* * * * *', async () => {
           }
         }
         
-        console.log(`[Cron] 세션(${sessionCode}) 정리 및 유저 퇴장 처리 완료.`);
+        console.log(`[Cron] 세션(${sessionCode}) DB 정리 및 Redis 게임 데이터 완벽 삭제 완료.`);
       }
     } catch (error) {
       console.error('[Cron] 세션 자동 만료 처리 중 오류 발생:', error);
