@@ -45,26 +45,40 @@ export const createSession = async (hostUserId, {
   const expiresAt = new Date(Date.now() + ((durationHours ?? 24) * 60 * 60 * 1000));
 
   const rows = await withTransaction(async (client) => {
-    // 세션 생성 (게임 설정 컬럼 포함)
+    // [Task 5] 게임 설정을 module_configs JSONB 에도 저장 (클라이언트 폴백용)
+    const resolvedKillCooldown   = killCooldown   ?? 30;
+    const resolvedDiscussionTime = discussionTime ?? 90;
+    const resolvedVoteTime       = voteTime       ?? 30;
+    const resolvedMissionPerCrew = missionPerCrew ?? 3;
+    const moduleConfigsJson = JSON.stringify({
+      killCooldown:      resolvedKillCooldown,
+      emergencyCooldown: resolvedDiscussionTime,
+      voteTime:          resolvedVoteTime,
+      missionPerCrew:    resolvedMissionPerCrew,
+    });
+
+    // 세션 생성 (게임 설정 컬럼 + module_configs 포함)
     const session = await client.query(
       `INSERT INTO sessions
          (host_user_id, session_code, name, expires_at, active_modules,
-          game_type, max_members, impostor_count, kill_cooldown, discussion_time, vote_time, mission_per_crew)
+          game_type, max_members, impostor_count, kill_cooldown, discussion_time, vote_time, mission_per_crew,
+          module_configs)
        VALUES ($1, $2, $3, $4, $5,
-               COALESCE($6, 'among_us'), COALESCE($7, 50), COALESCE($8, 1), COALESCE($9, 30),
-               COALESCE($10, 90), COALESCE($11, 30), COALESCE($12, 3))
+               COALESCE($6, 'among_us'), COALESCE($7, 50), COALESCE($8, 1), $9,
+               $10, $11, $12, $13::jsonb)
        RETURNING id, host_user_id, session_code, name, status, created_at, expires_at,
                  active_modules, module_configs, max_members,
                  game_type, impostor_count, kill_cooldown, discussion_time, vote_time, mission_per_crew`,
       [
         hostUserId, code, name || null, expiresAt, activeModules,
-        gameType       ?? null,
-        maxMembers     ?? null,
-        impostorCount  ?? null,
-        killCooldown   ?? null,
-        discussionTime ?? null,
-        voteTime       ?? null,
-        missionPerCrew ?? null,
+        gameType              ?? null,
+        maxMembers            ?? null,
+        impostorCount         ?? null,
+        resolvedKillCooldown,
+        resolvedDiscussionTime,
+        resolvedVoteTime,
+        resolvedMissionPerCrew,
+        moduleConfigsJson,
       ]
     );
     const sessionId = session.rows[0].id;

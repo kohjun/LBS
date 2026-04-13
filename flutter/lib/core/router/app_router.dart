@@ -16,6 +16,7 @@ import '../../features/session/presentation/member_management_screen.dart';
 import '../../features/game/presentation/game_main_screen.dart';
 import '../../features/game/presentation/game_role_screen.dart';
 import '../../features/game/presentation/game_result_screen.dart';
+import '../../features/game/presentation/session_info_screen.dart';
 import '../../features/lobby/presentation/lobby_screen.dart';
 import '../../features/home/data/session_repository.dart';
 
@@ -132,6 +133,23 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) {
           final sessionId = state.pathParameters['sessionId']!;
           return GameRoleScreen(sessionId: sessionId);
+        },
+      ),
+      // ← 뒤로가기 버튼 → 세션 정보 화면
+      GoRoute(
+        path: '/game/:sessionId/session-info',
+        builder: (context, state) {
+          final sessionId = state.pathParameters['sessionId']!;
+          final typeStr =
+              state.uri.queryParameters['type'] ?? 'defaultType';
+          final sessionType = SessionType.values.firstWhere(
+            (v) => v.name == typeStr,
+            orElse: () => SessionType.defaultType,
+          );
+          return SessionInfoScreen(
+            sessionId: sessionId,
+            sessionType: sessionType,
+          );
         },
       ),
       GoRoute(

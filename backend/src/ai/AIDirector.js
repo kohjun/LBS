@@ -71,7 +71,7 @@ async function askWithModel({ model, systemPrompt, history, question }) {
   const chatSession = createGenerativeModel(model, systemPrompt).startChat({
     history,
     generationConfig: {
-      maxOutputTokens: 500,
+      maxOutputTokens: 850,
       temperature: 0.7,
     },
   });

@@ -10,11 +10,19 @@ class AIChatPanel extends ConsumerStatefulWidget {
     required this.sessionId,
     this.isGhostMode = false,
     this.height = double.infinity,
+    this.onDragUpdate,
+    this.onDragEnd,
+    this.onHandleTap,
+    this.handleLabel,
   });
 
   final String sessionId;
   final bool isGhostMode;
   final double height;
+  final GestureDragUpdateCallback? onDragUpdate;
+  final GestureDragEndCallback? onDragEnd;
+  final VoidCallback? onHandleTap;
+  final String? handleLabel;
 
   @override
   ConsumerState<AIChatPanel> createState() => _AIChatPanelState();
@@ -26,6 +34,11 @@ class _AIChatPanelState extends ConsumerState<AIChatPanel> {
 
   bool _isAwaitingReply = false;
   String? _pendingQuestion;
+
+  bool get _hasInteractiveHandle =>
+      widget.onDragUpdate != null ||
+      widget.onDragEnd != null ||
+      widget.onHandleTap != null;
 
   @override
   void dispose() {
@@ -77,22 +90,22 @@ class _AIChatPanelState extends ConsumerState<AIChatPanel> {
   }
 
   void _handleLogsChanged(List<ChatLog> logs) {
-    _scrollToBottom();
-
-    if (!_isAwaitingReply || logs.isEmpty) return;
-
-    final lastType = logs.last.type;
-    if (lastType != ChatLogType.aiReply && lastType != ChatLogType.system) {
-      return;
+    if (_isAwaitingReply && logs.isNotEmpty) {
+      final lastType = logs.last.type;
+      if (lastType == ChatLogType.aiReply || lastType == ChatLogType.system) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          setState(() {
+            _isAwaitingReply = false;
+            _pendingQuestion = null;
+          });
+          _scrollToBottom();
+        });
+        return;
+      }
     }
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      setState(() {
-        _isAwaitingReply = false;
-        _pendingQuestion = null;
-      });
-    });
+    _scrollToBottom();
   }
 
   @override
@@ -126,13 +139,42 @@ class _AIChatPanelState extends ConsumerState<AIChatPanel> {
         top: false,
         child: Column(
           children: [
-            const SizedBox(height: 10),
-            Container(
-              width: 42,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(999),
+            GestureDetector(
+              onVerticalDragUpdate: widget.onDragUpdate,
+              onVerticalDragEnd: widget.onDragEnd,
+              onTap: widget.onHandleTap,
+              behavior: HitTestBehavior.opaque,
+              child: SizedBox(
+                width: double.infinity,
+                child: Column(
+                  children: [
+                    const SizedBox(height: 10),
+                    Container(
+                      width: 42,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: _hasInteractiveHandle
+                            ? Colors.grey.shade400
+                            : Colors.grey.shade300,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
+                    if (widget.handleLabel != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        widget.handleLabel!,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: _hasInteractiveHandle
+                              ? const Color(0xFF4B5563)
+                              : const Color(0xFF9CA3AF),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 4),
+                  ],
+                ),
               ),
             ),
             Padding(
@@ -250,8 +292,7 @@ class _AIChatPanelState extends ConsumerState<AIChatPanel> {
                         hintText: widget.isGhostMode
                             ? 'Ghost mode cannot send AI questions.'
                             : 'Ask AI MOYA something',
-                        hintStyle:
-                            const TextStyle(color: Color(0xFF9CA3AF)),
+                        hintStyle: const TextStyle(color: Color(0xFF9CA3AF)),
                         filled: true,
                         fillColor: const Color(0xFFF3F4F6),
                         contentPadding: const EdgeInsets.symmetric(
@@ -309,7 +350,12 @@ class _AIChatPanelState extends ConsumerState<AIChatPanel> {
       child: Material(
         color: Colors.transparent,
         child: widget.height.isFinite
-            ? SizedBox(height: widget.height, child: panelBody)
+            ? AnimatedContainer(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutCubic,
+                height: widget.height,
+                child: panelBody,
+              )
             : SizedBox.expand(child: panelBody),
       ),
     );
@@ -482,10 +528,10 @@ class _EmptyAiLog extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final h = constraints.maxHeight;
-        final showIcon = h >= 60;
-        final showSubText = h >= 130;
-        final showChips = h >= 130 && !isGhostMode;
+        final height = constraints.maxHeight;
+        final showIcon = height >= 60;
+        final showSubText = height >= 130;
+        final showChips = height >= 130 && !isGhostMode;
 
         return Center(
           child: Padding(

@@ -49,6 +49,9 @@ dependencies:
   # [Task 2] 화면 꺼짐 방지 (OS Background Kill 예방)
   wakelock_plus: ^1.2.8
 
+  # [Task 2] 효과음
+  audioplayers: ^6.0.0
+
   # 유틸
   intl: ^0.19.0
   uuid: ^4.4.0
@@ -70,3 +73,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/images/
+    - assets/sounds/

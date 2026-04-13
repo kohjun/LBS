@@ -64,6 +64,12 @@ class Session {
   final Map<String, dynamic> moduleConfigs;
   final String gameStatus; // 'lobby' | 'playing'
 
+  // ── [Task 3 / Task 5] 게임 설정 ───────────────────────────────────────────
+  /// 킬 쿨타임 (초). 서버 kill_cooldown 컬럼 → 기본 30초.
+  final int killCooldown;
+  /// 긴급 회의 쿨타임 (초). 서버 discussion_time 컬럼 → 기본 90초.
+  final int emergencyCooldown;
+
   const Session({
     required this.id,
     required this.name,
@@ -76,6 +82,8 @@ class Session {
     this.activeModules = const [],
     this.moduleConfigs = const {},
     this.gameStatus = 'lobby',
+    this.killCooldown = 30,
+    this.emergencyCooldown = 90,
   });
 
   SessionType get sessionType => SessionType.fromModules(activeModules);
@@ -90,6 +98,17 @@ class Session {
 
     final rawModules = m['active_modules'] as List<dynamic>? ?? [];
     final rawConfigs = m['module_configs'] as Map<String, dynamic>? ?? {};
+
+    // kill_cooldown: 전용 컬럼 우선, module_configs 폴백
+    final killCd = (m['kill_cooldown'] as num?)?.toInt()
+        ?? (rawConfigs['killCooldown'] as num?)?.toInt()
+        ?? 30;
+
+    // discussion_time: 전용 컬럼 우선, module_configs 폴백 (emergencyCooldown 키)
+    final emergencyCd = (m['discussion_time'] as num?)?.toInt()
+        ?? (rawConfigs['emergencyCooldown'] as num?)?.toInt()
+        ?? (rawConfigs['discussionTime'] as num?)?.toInt()
+        ?? 90;
 
     return Session(
       id: m['id'] as String,
@@ -108,6 +127,8 @@ class Session {
       activeModules: rawModules.whereType<String>().toList(),
       moduleConfigs: rawConfigs,
       gameStatus: m['game_status'] as String? ?? 'lobby',
+      killCooldown: killCd,
+      emergencyCooldown: emergencyCd,
     );
   }
 }
@@ -158,12 +179,14 @@ class SessionRepository {
     return list.whereType<Map<String, dynamic>>().map(Session.fromMap).toList();
   }
 
-  // ★ 수정됨: maxMembers, activeModules 파라미터를 추가로 받고 서버(data)로 넘겨줌
+  // ★ 수정됨: killCooldown / emergencyCooldown 파라미터 추가 [Task 5]
   Future<Session> createSession(
     String name,
     int durationHours,
     int maxMembers, {
     List<String> activeModules = const [],
+    int killCooldown = 30,
+    int emergencyCooldown = 90,
   }) async {
     final res = await _api.post(
       '/sessions',
@@ -172,6 +195,8 @@ class SessionRepository {
         'durationHours': durationHours,
         'maxMembers': maxMembers,
         'activeModules': activeModules,
+        'killCooldown': killCooldown,
+        'discussionTime': emergencyCooldown,
       },
     );
     return Session.fromMap(res.data['session'] as Map<String, dynamic>);
@@ -253,12 +278,14 @@ class SessionListNotifier extends AsyncNotifier<List<Session>> {
     state = await AsyncValue.guard(_fetch);
   }
 
-  // 세션 생성 후 Session 객체를 반환 (lobby 이동에 사용)
+  // 세션 생성 후 Session 객체를 반환 (lobby 이동에 사용) [Task 5: 게임 설정 추가]
   Future<Session> createSession(
     String name, {
     int durationHours = 1,
     int maxMembers = 3,
     List<String> activeModules = const [],
+    int killCooldown = 30,
+    int emergencyCooldown = 90,
   }) async {
     try {
       final session = await ref.read(sessionRepositoryProvider).createSession(
@@ -266,6 +293,8 @@ class SessionListNotifier extends AsyncNotifier<List<Session>> {
             durationHours,
             maxMembers,
             activeModules: activeModules,
+            killCooldown: killCooldown,
+            emergencyCooldown: emergencyCooldown,
           );
 
       // 세션 생성 후 목록 새로고침

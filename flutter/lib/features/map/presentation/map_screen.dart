@@ -589,8 +589,11 @@ class MapScreen extends ConsumerStatefulWidget {
 }
 
 class _MapScreenState extends ConsumerState<MapScreen> {
+  static const double _kCollapsedAiChatHeight = 236.0;
+
   NaverMapController? _mapController;
   bool _followMe = true;
+  double _aiChatHeight = _kCollapsedAiChatHeight;
 
   // ── 마커 캐시 ─────────────────────────────────────────────────────────────
   // members/sharingEnabled/hiddenMembers가 실제로 변경됐을 때만 마커를 재계산한다.
@@ -601,6 +604,54 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   Set<String>? _prevHiddenMembers;
   String? _prevMyUserId;
   Set<String>? _prevEliminatedUserIds;
+
+  double _resolveExpandedAiChatHeight(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final topGap = media.padding.top + 104;
+    final maxHeight = math.max(
+      _kCollapsedAiChatHeight,
+      media.size.height - topGap,
+    );
+    final preferredHeight = media.size.height * 0.72;
+    return math.min(maxHeight, preferredHeight);
+  }
+
+  void _handleAiChatDragUpdate(
+    DragUpdateDetails details,
+    double expandedHeight,
+  ) {
+    final nextHeight = (_aiChatHeight - (details.primaryDelta ?? 0))
+        .clamp(_kCollapsedAiChatHeight, expandedHeight)
+        .toDouble();
+    if ((nextHeight - _aiChatHeight).abs() < 0.5) return;
+    setState(() => _aiChatHeight = nextHeight);
+  }
+
+  void _handleAiChatDragEnd(
+    DragEndDetails details,
+    double expandedHeight,
+  ) {
+    final velocity = details.primaryVelocity ?? 0;
+    final midpoint = (_kCollapsedAiChatHeight + expandedHeight) / 2;
+
+    final targetHeight = velocity < -250
+        ? expandedHeight
+        : velocity > 250
+            ? _kCollapsedAiChatHeight
+            : (_aiChatHeight >= midpoint
+                ? expandedHeight
+                : _kCollapsedAiChatHeight);
+
+    if ((_aiChatHeight - targetHeight).abs() < 0.5) return;
+    setState(() => _aiChatHeight = targetHeight);
+  }
+
+  void _toggleAiChatHeight(double expandedHeight) {
+    final isCollapsed = (_aiChatHeight - _kCollapsedAiChatHeight).abs() < 24;
+    setState(() {
+      _aiChatHeight = isCollapsed ? expandedHeight : _kCollapsedAiChatHeight;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -659,12 +710,29 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     // 활성 모듈 목록 (세션 캐시에서 조회)
     final activeModules = getSessionModules(ref).toSet();
     final isDefaultMode = activeModules.isEmpty;
-    const aiChatHeight = 236.0;
     final showAiChat = amgState.isStarted && !isDefaultMode;
+    final expandedAiChatHeight = _resolveExpandedAiChatHeight(context);
+    final aiChatHeight = showAiChat
+        ? _aiChatHeight
+            .clamp(_kCollapsedAiChatHeight, expandedAiChatHeight)
+            .toDouble()
+        : _kCollapsedAiChatHeight;
     final showMemberPanel = isDefaultMode;
     final overlayBottomOffset = showAiChat ? aiChatHeight + 20 : 290.0;
     final floatingControlsBottom =
         showAiChat ? aiChatHeight + 104 : (showMemberPanel ? 280.0 : 96.0);
+
+    if (!showAiChat && _aiChatHeight != _kCollapsedAiChatHeight) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _aiChatHeight == _kCollapsedAiChatHeight) return;
+        setState(() => _aiChatHeight = _kCollapsedAiChatHeight);
+      });
+    } else if (showAiChat && _aiChatHeight != aiChatHeight) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _aiChatHeight == aiChatHeight) return;
+        setState(() => _aiChatHeight = aiChatHeight);
+      });
+    }
 
     // 내 위치 따라가기
     final myPos = mapState.myPosition;
@@ -788,7 +856,14 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                 SnackBar(content: Text(error)),
               );
             }),
-            onCloseFinished: () => context.pop(),
+            onCloseFinished: () {
+              final router = GoRouter.of(context);
+              if (router.canPop()) {
+                context.pop();
+                return;
+              }
+              context.go(AppRoutes.home);
+            },
             bottomActionOffset: overlayBottomOffset,
             showTopStatus: isDefaultMode,
           ),
@@ -881,6 +956,15 @@ class _MapScreenState extends ConsumerState<MapScreen> {
               child: AIChatPanel(
                 sessionId: widget.sessionId,
                 height: aiChatHeight,
+                isGhostMode: mapState.isEliminated,
+                onDragUpdate: (details) =>
+                    _handleAiChatDragUpdate(details, expandedAiChatHeight),
+                onDragEnd: (details) =>
+                    _handleAiChatDragEnd(details, expandedAiChatHeight),
+                onHandleTap: () => _toggleAiChatHeight(expandedAiChatHeight),
+                handleLabel: aiChatHeight >= expandedAiChatHeight - 24
+                    ? '아래로 내려 접기'
+                    : '위로 끌어올려 더 보기',
               ),
             ),
 

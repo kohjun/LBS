@@ -17,7 +17,8 @@ import '../../map/presentation/map_screen.dart';
 import '../../map/presentation/map_session_models.dart';
 import '../data/game_models.dart';
 import '../providers/game_provider.dart';
-import 'widgets/ai_chat_panel.dart'; 
+import 'session_info_screen.dart';
+import 'widgets/ai_chat_panel.dart';
 
 class GameMainScreen extends ConsumerStatefulWidget {
   const GameMainScreen({
@@ -36,11 +37,32 @@ class GameMainScreen extends ConsumerStatefulWidget {
 class _GameMainScreenState extends ConsumerState<GameMainScreen>
     with WidgetsBindingObserver {
 
-  // ── KILL 쿨타임 ──────────────────────────────────────────────────────────────
-  // BT/UWB 연동 후 proximateTargetId 가 설정되면 자동 활성화됩니다.
-  // 현재는 proximateTargetId != null 조건만 체크하며 실제 근접 탐지는 추후 구현합니다.
-  static const int _kKillCooldownSecs = 30;
+  // ── 세션 정보 오버레이 (GoRouter push 대신 setState 오버레이 사용)
+  // GoRouter의 형제 라우트 전환 시 기존 게임 화면이 dispose되는 문제를 방지
+  bool _showSessionInfo = false;
+
+  void _openSessionInfo() => setState(() => _showSessionInfo = true);
+  void _closeSessionInfo() => setState(() => _showSessionInfo = false);
+
+  // ── [Task 1] 리사이즈 가능 AI 채팅 패널 ───────────────────────────────────
+  // 상단 pill 핸들을 드래그하면 패널 높이가 조정됩니다.
+  double? _chatPanelHeight;
+  static const double _kChatMinHeight = 200.0;
+  static const double _kChatMaxHeightFactor = 0.72;
+
+  void _onChatDragUpdate(DragUpdateDetails details) {
+    final screenH = MediaQuery.of(context).size.height;
+    setState(() {
+      _chatPanelHeight = ((_chatPanelHeight ?? screenH * 0.5) - details.delta.dy)
+          .clamp(_kChatMinHeight, screenH * _kChatMaxHeightFactor);
+    });
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // ── [Task 3] KILL 쿨타임 ─────────────────────────────────────────────────
+  static const int _kKillCooldownDefault = 30;
   int _killCooldownSecs = 0;
+  int _killCooldownDuration = _kKillCooldownDefault; // initState에서 세션 설정으로 초기화
   Timer? _killCooldownTimer;
 
   void _handleKill(String targetId) {
@@ -50,7 +72,7 @@ class _GameMainScreenState extends ConsumerState<GameMainScreen>
   }
 
   void _startKillCooldown() {
-    setState(() => _killCooldownSecs = _kKillCooldownSecs);
+    setState(() => _killCooldownSecs = _killCooldownDuration);
     _killCooldownTimer?.cancel();
     _killCooldownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted) { timer.cancel(); return; }
@@ -71,6 +93,14 @@ class _GameMainScreenState extends ConsumerState<GameMainScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // 세션 설정에서 killCooldown을 미리 읽어 캐시 (킬할 때마다 목록 순회 방지)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final sessions =
+          ref.read(sessionListProvider).valueOrNull ?? const <Session>[];
+      final match = sessions.where((s) => s.id == widget.sessionId);
+      _killCooldownDuration =
+          match.isEmpty ? _kKillCooldownDefault : match.first.killCooldown;
+    });
   }
 
   @override
@@ -100,6 +130,149 @@ class _GameMainScreenState extends ConsumerState<GameMainScreen>
   // ────────────────────────────────────────────────────────────────────────────
 
   // ── 누락되었던 필수 기능 메서드 복구 ──
+
+  // ── [Task 4] 아이템 상점 ─────────────────────────────────────────────────
+  void _openShopSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        const items = [
+          _ShopItem(name: '이동속도 증가', desc: '30초간 이동 속도 +50%', price: 50, icon: Icons.speed_rounded),
+          _ShopItem(name: '시야 확장',   desc: '60초간 시야 범위 +100%', price: 80, icon: Icons.visibility_rounded),
+          _ShopItem(name: '위치 은폐',   desc: '30초간 위치 추적 불가',  price: 100, icon: Icons.location_off_rounded),
+          _ShopItem(name: '순간이동',    desc: '임의 위치로 순간이동',    price: 150, icon: Icons.flash_on_rounded),
+          _ShopItem(name: '함정 설치',   desc: '이동 경로에 함정 배치',   price: 120, icon: Icons.pest_control_rounded),
+          _ShopItem(name: '쿨타임 감소', desc: '킬 쿨타임 -50% (1회)',  price: 200, icon: Icons.timer_off_rounded),
+        ];
+
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.55,
+          minChildSize: 0.38,
+          maxChildSize: 0.88,
+          builder: (ctx, scrollCtrl) {
+            return DecoratedBox(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF1E1B4B), Color(0xFF312E81)],
+                ),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+              ),
+              child: SafeArea(
+                top: false,
+                child: Column(
+                  children: [
+                    const SizedBox(height: 12),
+                    Container(
+                      width: 44, height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.3),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.storefront_rounded, color: Colors.white, size: 22),
+                          const SizedBox(width: 10),
+                          const Text('아이템 상점',
+                              style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700)),
+                          const Spacer(),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFF6DA),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.monetization_on_rounded, color: Color(0xFFC58A00), size: 16),
+                                SizedBox(width: 4),
+                                Text('준비 중', style: TextStyle(color: Color(0xFFC58A00), fontWeight: FontWeight.w700, fontSize: 13)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: GridView.builder(
+                        controller: scrollCtrl,
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          childAspectRatio: 1.35,
+                          crossAxisSpacing: 12,
+                          mainAxisSpacing: 12,
+                        ),
+                        itemCount: items.length,
+                        itemBuilder: (context, i) {
+                          final item = items[i];
+                          return Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(item.icon, color: Colors.cyanAccent, size: 26),
+                                const SizedBox(height: 6),
+                                Text(item.name,
+                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13)),
+                                const SizedBox(height: 2),
+                                Expanded(
+                                  child: Text(item.desc,
+                                      style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 11),
+                                      maxLines: 2, overflow: TextOverflow.ellipsis),
+                                ),
+                                Row(
+                                  children: [
+                                    const Icon(Icons.monetization_on_rounded, color: Color(0xFFC58A00), size: 13),
+                                    const SizedBox(width: 3),
+                                    Text('${item.price}',
+                                        style: const TextStyle(color: Color(0xFFC58A00), fontWeight: FontWeight.w700, fontSize: 12)),
+                                    const Spacer(),
+                                    GestureDetector(
+                                      onTap: () => ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('아이템 구매 기능은 준비 중입니다.'), duration: Duration(seconds: 2)),
+                                      ),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF7C3AED),
+                                          borderRadius: BorderRadius.circular(999),
+                                        ),
+                                        child: const Text('구매',
+                                            style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
 
   Future<void> _openMapSheet() {
     final mapState = ref.read(mapSessionProvider(widget.sessionId));
@@ -288,17 +461,25 @@ class _GameMainScreenState extends ConsumerState<GameMainScreen>
   @override
   Widget build(BuildContext context) {
     // ── 네비게이션 및 사이드 이펙트 처리 ──
+    // ⚠️ addPostFrameCallback으로 감싸서 '!_debugLocked' 에러 방지
+    // (finalizeTree/unmount 단계에서 직접 navigate 호출 시 Navigator lock 충돌 발생)
     ref.listen<AmongUsGameState>(
       gameProvider(widget.sessionId),
       (previous, next) {
         if (previous?.shouldNavigateToRole != true && next.shouldNavigateToRole) {
-          context.push('/game/${widget.sessionId}/role');
-          ref.read(gameProvider(widget.sessionId).notifier).resetRoleNavigation();
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            context.push('/game/${widget.sessionId}/role');
+            ref.read(gameProvider(widget.sessionId).notifier).resetRoleNavigation();
+          });
         }
         // gameOverWinner: null = 진행 중, 'crew'|'impostor' = 게임 종료
         if (previous?.gameOverWinner == null && next.gameOverWinner != null) {
           final winner = next.gameOverWinner!;
-          context.go('/game/${widget.sessionId}/result/$winner');
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            context.go('/game/${widget.sessionId}/result/$winner');
+          });
         }
       },
     );
@@ -307,16 +488,22 @@ class _GameMainScreenState extends ConsumerState<GameMainScreen>
       mapSessionProvider(widget.sessionId),
       (previous, next) {
         if (previous?.wasKicked != true && next.wasKicked) {
-          context.go('/'); 
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            context.go('/');
+          });
         }
       },
     );
+
+    // ── [Task 1] 채팅 패널 초기 높이 (한 번만) ───────────────────────────────
+    _chatPanelHeight ??= MediaQuery.of(context).size.height * 0.50;
 
     // ── 상태 읽기 ──
     final gameState = ref.watch(gameProvider(widget.sessionId));
     final mapState = ref.watch(mapSessionProvider(widget.sessionId));
     final authUser = ref.watch(authProvider).valueOrNull;
-    
+
     // 네트워크 연결 상태
     final isConnectedAsync = ref.watch(socketConnectionProvider);
     final isConnected = isConnectedAsync.value ?? true;
@@ -334,7 +521,19 @@ class _GameMainScreenState extends ConsumerState<GameMainScreen>
         (progressTotal > 0 ? progressCompleted / progressTotal : 0);
     final progress = ((rawPercent > 1 ? rawPercent / 100 : rawPercent).clamp(0.0, 1.0) as num).toDouble();
 
-    return Scaffold(
+    return PopScope(
+      // canPop: false → 시스템 뒤로가기를 항상 onPopInvokedWithResult에서 처리
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        // 세션 정보가 열려 있으면 닫기, 아니면 열기
+        // GoRouter/Navigator를 전혀 건드리지 않고 setState만 사용
+        if (_showSessionInfo) {
+          _closeSessionInfo();
+        } else {
+          _openSessionInfo();
+        }
+      },
+      child: Scaffold(
       resizeToAvoidBottomInset: false,
       backgroundColor: const Color(0xFFF1F5F9),
       body: SafeArea(
@@ -351,24 +550,32 @@ class _GameMainScreenState extends ConsumerState<GameMainScreen>
               ),
               child: Column(
                 children: [
-                  if (widget.sessionType != SessionType.defaultType)
-                    _GameMainTopBar(
-                      role: gameState.myRole,
-                      progress: progress,
-                      completed: progressCompleted,
-                      total: progressTotal,
-                      coinCount: 0, // Provider에 추가 연동 필요 (현재 임시 0)
-                    ),
+                  // 뒤로가기(←) 버튼 + 상단 정보 바
+                  // defaultType도 포함하여 항상 표시
+                  _GameMainTopBar(
+                    role: widget.sessionType != SessionType.defaultType
+                        ? gameState.myRole
+                        : null,
+                    progress: progress,
+                    completed: progressCompleted,
+                    total: progressTotal,
+                    coinCount: 0,
+                    showProgressBar: widget.sessionType != SessionType.defaultType,
+                    onBack: _openSessionInfo,
+                  ),
                   
-                  Expanded(
+                  // ── [Task 1] 리사이즈 가능 AI 채팅 패널 ───────────────────
+                  SizedBox(
+                    height: _chatPanelHeight,
                     child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
                       child: ClipRRect(
                         borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
                         child: AIChatPanel(
                           sessionId: widget.sessionId,
                           isGhostMode: isGhostMode,
                           height: double.infinity,
+                          onDragUpdate: _onChatDragUpdate,
                         ),
                       ),
                     ),
@@ -377,24 +584,34 @@ class _GameMainScreenState extends ConsumerState<GameMainScreen>
                   if (!isKeyboardVisible)
                     _GameBottomDock(
                       actions: [
-                        // ── KILL 버튼 (임포스터 전용, 왼쪽 배치) ────────────────
-                        // 활성 조건: 임포스터 && 쿨타임 없음 && 근접 대상 존재
-                        // 근접 대상(proximateTargetId)은 BT/UWB 연동 후 자동 설정됩니다.
-                        // 현재는 UI만 구성하고 실제 근접 탐지 로직은 추후 구현합니다.
-                        if (widget.sessionType == SessionType.verbal &&
-                            gameState.myRole?.isImpostor == true &&
+                        // ── [Task 3] KILL / TAG 버튼 ─────────────────────────
+                        // 표시 조건: 임포스터이거나 chase 모드 (유령 모드 제외)
+                        if ((gameState.myRole?.isImpostor == true ||
+                                widget.sessionType == SessionType.chase) &&
                             !isGhostMode)
                           _GameActionItem(
-                            icon: Icons.close,
+                            icon: widget.sessionType == SessionType.chase
+                                ? Icons.touch_app_rounded
+                                : Icons.close,
                             // 쿨타임 중엔 남은 시간 표시
                             label: _killCooldownSecs > 0
-                                ? '킬 (${_killCooldownSecs}s)'
-                                : '킬',
-                            backgroundColor: const Color(0xFF7F1D1D),
-                            // TODO: proximateTargetId는 BT/UWB 근접 탐지 구현 후 활성화됨
-                            onTap: (_killCooldownSecs == 0 &&
-                                    mapState.proximateTargetId != null)
-                                ? () => _handleKill(mapState.proximateTargetId!)
+                                ? '${widget.sessionType == SessionType.chase ? '태그' : '킬'} (${_killCooldownSecs}s)'
+                                : (widget.sessionType == SessionType.chase ? '태그' : '킬'),
+                            backgroundColor: _killCooldownSecs > 0
+                                ? const Color(0xFF7F1D1D).withValues(alpha: 0.55)
+                                : const Color(0xFF7F1D1D),
+                            // BT/UWB 근접 탐지 구현 전까지는 proximateTargetId 없이도 킬 가능하도록
+                            onTap: _killCooldownSecs == 0
+                                ? () {
+                                    final targetId = mapState.proximateTargetId;
+                                    if (targetId != null) {
+                                      _handleKill(targetId);
+                                    } else {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('근처에 대상이 없습니다.')),
+                                      );
+                                    }
+                                  }
                                 : null,
                           ),
 
@@ -414,7 +631,7 @@ class _GameMainScreenState extends ConsumerState<GameMainScreen>
                                 ? () => _showReportSheet(mapState) : null,
                           ),
 
-                        // ── 긴급호출 (verbal 전용, 전체 멤버 사용 가능) ──────
+                        // ── 긴급호출 (verbal 전용) ────────────────────────────
                         if (widget.sessionType == SessionType.verbal)
                           _GameActionItem(
                             icon: Icons.warning_amber_rounded, label: '긴급호출',
@@ -428,6 +645,14 @@ class _GameMainScreenState extends ConsumerState<GameMainScreen>
                             icon: Icons.assignment_outlined, label: '미션',
                             backgroundColor: const Color(0xFF0F766E),
                             onTap: !isGhostMode ? _openMissionSheet : null,
+                          ),
+
+                        // ── [Task 4] 아이템 상점 (game 모드 전용) ─────────────
+                        if (widget.sessionType != SessionType.defaultType)
+                          _GameActionItem(
+                            icon: Icons.storefront_rounded, label: '상점',
+                            backgroundColor: const Color(0xFF7C3AED),
+                            onTap: !isGhostMode ? _openShopSheet : null,
                           ),
                       ],
                     ),
@@ -480,7 +705,59 @@ class _GameMainScreenState extends ConsumerState<GameMainScreen>
                   ),
                 ),
               ),
+
+            // ── 세션 정보 오버레이 ───────────────────────────────────────
+            // GoRouter push 없이 게임 화면 위에 슬라이드로 올라오는 오버레이
+            // 이 방식은 게임 화면을 dispose하지 않으므로 소켓이 유지됩니다
+            AnimatedSlide(
+              offset: _showSessionInfo ? Offset.zero : const Offset(-1, 0),
+              duration: const Duration(milliseconds: 280),
+              curve: Curves.easeInOut,
+              child: AnimatedOpacity(
+                opacity: _showSessionInfo ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 220),
+                child: _showSessionInfo
+                    ? _SessionInfoOverlay(
+                        sessionId: widget.sessionId,
+                        sessionType: widget.sessionType,
+                        onClose: _closeSessionInfo,
+                      )
+                    : const SizedBox.shrink(),
+              ),
+            ),
           ],
+        ),
+      ),
+    ), // Scaffold
+    ); // PopScope
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 세션 정보 오버레이 – GameMainScreen Stack 위에 올라오는 전체화면 위젯
+// GoRouter/Navigator를 사용하지 않으므로 게임 상태(소켓 등)가 유지됩니다
+// ══════════════════════════════════════════════════════════════════════════════
+
+class _SessionInfoOverlay extends StatelessWidget {
+  const _SessionInfoOverlay({
+    required this.sessionId,
+    required this.sessionType,
+    required this.onClose,
+  });
+
+  final String sessionId;
+  final SessionType sessionType;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: const Color(0xFF0F0A2A),
+      child: SafeArea(
+        child: SessionInfoContent(
+          sessionId: sessionId,
+          sessionType: sessionType,
+          onClose: onClose,
         ),
       ),
     );
@@ -492,47 +769,95 @@ class _GameMainScreenState extends ConsumerState<GameMainScreen>
 // ==========================================
 
 class _GameMainTopBar extends StatelessWidget {
-  const _GameMainTopBar({required this.role, required this.progress, required this.completed, required this.total, required this.coinCount});
-  final GameRole? role; final double progress; final int completed; final int total; final int coinCount;
+  const _GameMainTopBar({
+    required this.role,
+    required this.progress,
+    required this.completed,
+    required this.total,
+    required this.coinCount,
+    required this.onBack,
+    this.showProgressBar = true,
+  });
+  final GameRole? role;
+  final double progress;
+  final int completed;
+  final int total;
+  final int coinCount;
+  final VoidCallback onBack;
+  final bool showProgressBar;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+      padding: const EdgeInsets.fromLTRB(8, 12, 16, 0),
       child: Row(
         children: [
-          SizedBox(
-            width: 96,
-            child: role == null ? const SizedBox.shrink() : Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(color: role!.isImpostor ? Colors.red.withValues(alpha: 0.14) : Colors.green.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(16)),
-              child: Text(role!.isImpostor ? '임포스터' : '크루원', textAlign: TextAlign.center, style: TextStyle(color: role!.isImpostor ? Colors.red : Colors.green, fontWeight: FontWeight.w700)),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 18, offset: const Offset(0, 8))]),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text('미션 진행도 $completed / $total', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
-                  const SizedBox(height: 8),
-                  ClipRRect(borderRadius: BorderRadius.circular(999), child: LinearProgressIndicator(value: progress, minHeight: 10, backgroundColor: Colors.green.withValues(alpha: 0.12), valueColor: const AlwaysStoppedAnimation<Color>(Colors.green))),
-                ],
+          // ← 뒤로가기 버튼 (세션 정보 화면으로 이동)
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: onBack,
+              borderRadius: BorderRadius.circular(14),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.07), blurRadius: 10, offset: const Offset(0, 4))],
+                ),
+                child: const Icon(Icons.arrow_back_ios_new_rounded, size: 18, color: Color(0xFF1F2937)),
               ),
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
+          // 역할 배지
+          if (role != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: role!.isImpostor ? Colors.red.withValues(alpha: 0.14) : Colors.green.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Text(
+                role!.isImpostor ? '임포스터' : '크루원',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: role!.isImpostor ? Colors.red : Colors.green, fontWeight: FontWeight.w700),
+              ),
+            ),
+          if (role != null) const SizedBox(width: 10),
+          // 미션 진행도
+          if (showProgressBar)
+            Expanded(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 14, offset: const Offset(0, 6))],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text('미션 $completed / $total', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                    const SizedBox(height: 6),
+                    ClipRRect(borderRadius: BorderRadius.circular(999), child: LinearProgressIndicator(value: progress, minHeight: 8, backgroundColor: Colors.green.withValues(alpha: 0.12), valueColor: const AlwaysStoppedAnimation<Color>(Colors.green))),
+                  ],
+                ),
+              ),
+            )
+          else
+            const Spacer(),
+          const SizedBox(width: 10),
+          // 코인 표시
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            decoration: BoxDecoration(color: const Color(0xFFFFF6DA), borderRadius: BorderRadius.circular(18)),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(color: const Color(0xFFFFF6DA), borderRadius: BorderRadius.circular(14)),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.monetization_on_rounded, color: Color(0xFFC58A00)), const SizedBox(width: 6),
-                Text('$coinCount', style: const TextStyle(color: Color(0xFFC58A00), fontWeight: FontWeight.w700)),
+                const Icon(Icons.monetization_on_rounded, color: Color(0xFFC58A00), size: 16),
+                const SizedBox(width: 5),
+                Text('$coinCount', style: const TextStyle(color: Color(0xFFC58A00), fontWeight: FontWeight.w700, fontSize: 13)),
               ],
             ),
           ),
@@ -598,6 +923,15 @@ class _GameActionButton extends StatelessWidget {
 class _GameActionItem {
   const _GameActionItem({required this.icon, required this.label, required this.backgroundColor, required this.onTap});
   final IconData icon; final String label; final Color backgroundColor; final VoidCallback? onTap;
+}
+
+// ── [Task 4] 상점 아이템 데이터 모델 ──────────────────────────────────────────
+class _ShopItem {
+  const _ShopItem({required this.name, required this.desc, required this.price, required this.icon});
+  final String name;
+  final String desc;
+  final int price;
+  final IconData icon;
 }
 
 class _MapMemberPanelToggle extends StatelessWidget {

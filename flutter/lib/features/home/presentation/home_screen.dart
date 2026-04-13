@@ -140,6 +140,9 @@ class HomeScreen extends ConsumerWidget {
     int selectedHours = 1;
     double maxMembers = 3; // 최대 인원 기본값 3명
     SessionType selectedType = SessionType.defaultType;
+    // [Task 5] 게임 설정
+    double killCooldown = 30;        // 10 ~ 60 초
+    double emergencyCooldown = 90;   // 30 ~ 180 초
 
     final Map<int, String> durationOptions = {
       1: '1시간 (기본)',
@@ -260,6 +263,51 @@ class HomeScreen extends ConsumerWidget {
                       ),
                     ],
                   ),
+
+                  // ── [Task 5] 게임 설정 (verbal / chase 전용) ──────────────
+                  if (selectedType == SessionType.verbal || selectedType == SessionType.chase) ...[
+                    const SizedBox(height: 24),
+                    const Text('게임 설정', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 12),
+
+                    // 킬 쿨타임
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('킬 쿨타임', style: TextStyle(fontSize: 13)),
+                        Text('${killCooldown.toInt()}초',
+                          style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 13)),
+                      ],
+                    ),
+                    Slider(
+                      value: killCooldown,
+                      min: 10, max: 60,
+                      divisions: 10,
+                      activeColor: Colors.red,
+                      label: '${killCooldown.toInt()}초',
+                      onChanged: (v) => setDialogState(() => killCooldown = v),
+                    ),
+
+                    // 긴급회의 쿨타임 (verbal 전용)
+                    if (selectedType == SessionType.verbal) ...[
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text('긴급회의 쿨타임', style: TextStyle(fontSize: 13)),
+                          Text('${emergencyCooldown.toInt()}초',
+                            style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, fontSize: 13)),
+                        ],
+                      ),
+                      Slider(
+                        value: emergencyCooldown,
+                        min: 30, max: 180,
+                        divisions: 15,
+                        activeColor: Colors.orange,
+                        label: '${emergencyCooldown.toInt()}초',
+                        onChanged: (v) => setDialogState(() => emergencyCooldown = v),
+                      ),
+                    ],
+                  ],
                 ],
               ),
             ),
@@ -280,6 +328,8 @@ class HomeScreen extends ConsumerWidget {
                       durationHours: selectedHours,
                       maxMembers: maxMembers.toInt(),
                       activeModules: selectedType.toModules(),
+                      killCooldown: killCooldown.toInt(),
+                      emergencyCooldown: emergencyCooldown.toInt(),
                     );
 
                     if (context.mounted) {

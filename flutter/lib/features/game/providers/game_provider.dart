@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakelock_plus/wakelock_plus.dart'; // Task 2: 화면 꺼짐 방지
 
 import '../../../core/services/socket_service.dart';
+import '../../../core/services/sound_service.dart';
 import '../data/game_models.dart';
 
 final gameProvider =
@@ -22,6 +23,10 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
   final String _sessionId;
   final _socket = SocketService();
   final List<StreamSubscription> _subs = [];
+  int _logIdCounter = 0;
+
+  String _nextLogId() =>
+      '${DateTime.now().millisecondsSinceEpoch}_${_logIdCounter++}';
 
   void _subscribeToEvents() {
     _subs.add(_socket.onConnectionChange.listen((connected) {
@@ -54,8 +59,9 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
     }));
 
     _subs.add(_socket.onGameEvent(SocketService.gameStarted).listen((data) {
-      // [Task 2] 게임 시작 시 WakeLock 활성화 → 화면이 꺼져 OS가 앱을 종료하는 것을 방지
+      // [Task 2] 게임 시작 시 WakeLock 활성화 + 효과음
       WakelockPlus.enable();
+      SoundService().playGameStart();
       state = state.copyWith(
         isStarted: true,
         totalPlayers: data['playerCount'] as int? ?? 0,
@@ -124,7 +130,7 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
 
     _subs.add(_socket.onGameEvent(SocketService.gameAiMessage).listen((data) {
       final log = ChatLog(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        id: _nextLogId(),
         type: ChatLogType.aiAnnounce,
         message: data['message'] as String,
         timestamp: DateTime.now(),
@@ -134,10 +140,10 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
 
     _subs.add(_socket.onGameEvent(SocketService.gameAiReply).listen((data) {
       final isError = data['isError'] as bool? ?? false;
-      final message = data['answer'] as String? ?? 'AI 응답을 불러오지 못했습니다.';
+      final message = data['answer'] as String? ?? 'Failed to load AI response.';
 
       final log = ChatLog(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        id: _nextLogId(),
         type: isError ? ChatLogType.system : ChatLogType.aiReply,
         message: message,
         timestamp: DateTime.now(),
@@ -196,8 +202,9 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
     );
 
     _subs.add(_socket.onGameEvent(SocketService.gameOver).listen((data) {
-      // [Task 2] 게임 종료 시 WakeLock 해제
+      // [Task 2] 게임 종료 시 WakeLock 해제 + 효과음
       WakelockPlus.disable();
+      SoundService().playGameOver();
       state = state.copyWith(
         gameOverWinner: data['winner'] as String,
       );
@@ -230,7 +237,7 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
 
   void askAI(String question) {
     final myLog = ChatLog(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      id: _nextLogId(),
       type: ChatLogType.myQuestion,
       message: question,
       timestamp: DateTime.now(),
@@ -241,9 +248,9 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
       if (res['ok'] == true) return;
 
       final errLog = ChatLog(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        id: _nextLogId(),
         type: ChatLogType.system,
-        message: '질문 전송 실패: ${res['error']}',
+        message: 'Failed to send: ${res['error']}',
         timestamp: DateTime.now(),
       );
       state = state.copyWith(chatLogs: [...state.chatLogs, errLog]);

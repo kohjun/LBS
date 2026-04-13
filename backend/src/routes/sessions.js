@@ -17,12 +17,27 @@ const createSessionSchema = z.object({
   discussionTime: z.number().min(30).max(180).optional(),
   voteTime: z.number().min(15).max(60).optional(),
   missionPerCrew: z.number().min(1).max(5).optional(),
+  // [Task 5] 중첩 settings 객체도 허용 (Flutter createSession에서 전송 가능)
+  settings: z.object({
+    killCooldown:      z.number().min(10).max(60).optional(),
+    emergencyCooldown: z.number().min(30).max(180).optional(),
+    voteTime:          z.number().min(15).max(60).optional(),
+    missionPerCrew:    z.number().min(1).max(5).optional(),
+  }).optional(),
 });
 
-const normalizeCreateSessionBody = (body = {}) => ({
-  ...body,
-  activeModules: body.activeModules ?? body.active_modules,
-});
+// [Task 5] settings 중첩 객체를 최상위 필드로 병합 (기존 최상위 값이 우선)
+const normalizeCreateSessionBody = (body = {}) => {
+  const { settings, ...rest } = body;
+  return {
+    ...rest,
+    activeModules:  rest.activeModules ?? rest.active_modules,
+    killCooldown:   rest.killCooldown   ?? settings?.killCooldown,
+    discussionTime: rest.discussionTime ?? settings?.emergencyCooldown,
+    voteTime:       rest.voteTime       ?? settings?.voteTime,
+    missionPerCrew: rest.missionPerCrew ?? settings?.missionPerCrew,
+  };
+};
 
 export default async function sessionRoutes(fastify) {
   fastify.removeContentTypeParser('application/json');
