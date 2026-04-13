@@ -5,6 +5,7 @@ import * as sessionService from '../services/sessionService.js';
 import * as locationService from '../services/locationService.js';
 import { getIo, EVENTS } from '../websocket/index.js';
 import { startGameForSession } from '../game/startGameService.js';
+import * as AIDirector from '../ai/AIDirector.js';
 
 const createSessionSchema = z.object({
   name: z.string().max(100).optional(),
@@ -40,6 +41,22 @@ const normalizeCreateSessionBody = (body = {}) => {
 };
 
 export default async function sessionRoutes(fastify) {
+  const cleanupAiHistory = async ({ roomId, userId }) => {
+    try {
+      if (userId) {
+        await AIDirector.clearHistory(roomId, userId);
+        return;
+      }
+
+      await AIDirector.cleanupRoom(roomId);
+    } catch (error) {
+      fastify.log.warn(
+        { error, roomId, userId },
+        '[AI] Failed to clean session history',
+      );
+    }
+  };
+
   fastify.removeContentTypeParser('application/json');
   fastify.addContentTypeParser(
     'application/json',
@@ -75,7 +92,9 @@ export default async function sessionRoutes(fastify) {
 
   fastify.post('/:sessionId/end', async (request, reply) => {
     try {
-      await sessionService.endSession(request.user.id, request.params.sessionId);
+      const { sessionId } = request.params;
+      await sessionService.endSession(request.user.id, sessionId);
+      await cleanupAiHistory({ roomId: sessionId });
       return reply.send({ message: 'Session ended' });
     } catch (err) {
       if (err.message === 'SESSION_NOT_FOUND_OR_NOT_HOST') {
@@ -132,7 +151,9 @@ export default async function sessionRoutes(fastify) {
 
   fastify.delete('/:sessionId', async (request, reply) => {
     try {
-      await sessionService.endSession(request.user.id, request.params.sessionId);
+      const { sessionId } = request.params;
+      await sessionService.endSession(request.user.id, sessionId);
+      await cleanupAiHistory({ roomId: sessionId });
       return reply.send({ message: 'Session ended' });
     } catch (err) {
       if (err.message === 'SESSION_NOT_FOUND_OR_NOT_HOST') {
@@ -143,7 +164,9 @@ export default async function sessionRoutes(fastify) {
   });
 
   fastify.post('/:sessionId/leave', async (request, reply) => {
-    await sessionService.leaveSession(request.user.id, request.params.sessionId);
+    const { sessionId } = request.params;
+    await sessionService.leaveSession(request.user.id, sessionId);
+    await cleanupAiHistory({ roomId: sessionId, userId: request.user.id });
     return reply.send({ message: 'Left session' });
   });
 
@@ -232,6 +255,7 @@ export default async function sessionRoutes(fastify) {
 
     try {
       await sessionService.kickMember(request.user.id, sessionId, targetUserId);
+      await cleanupAiHistory({ roomId: sessionId, userId: targetUserId });
 
       const io = getIo();
       if (io) {

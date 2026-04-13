@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
 import fastifyCookie from '@fastify/cookie';
 import dotenv from 'dotenv';
+import { pathToFileURL } from 'node:url';
 
 import { connectRedis } from './config/redis.js';
 import { query as dbQuery } from './config/database.js';
@@ -112,3 +113,11 @@ export const startServer = async () => {
 };
 
 export default startServer;
+
+const isDirectRun =
+  process.argv[1] != null &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isDirectRun) {
+  startServer();
+}

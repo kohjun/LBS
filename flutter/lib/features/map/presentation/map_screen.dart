@@ -599,6 +599,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   NaverMapController? _mapController;
   bool _followMe = true;
   double _aiChatHeight = _kCollapsedAiChatHeight;
+  bool _isLeavingSession = false;
 
   // ── 마커 캐시 ─────────────────────────────────────────────────────────────
   // members/sharingEnabled/hiddenMembers가 실제로 변경됐을 때만 마커를 재계산한다.
@@ -656,6 +657,68 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     setState(() {
       _aiChatHeight = isCollapsed ? expandedHeight : _kCollapsedAiChatHeight;
     });
+  }
+
+  Future<void> _confirmLeaveGame() async {
+    if (_isLeavingSession) return;
+
+    final shouldLeave = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('게임 나가기'),
+            content: const Text(
+              '지금 나가면 게임 연결과 위치 공유가 종료됩니다. 정말로 나가시겠습니까?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('취소'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('나가기'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!shouldLeave || !mounted) return;
+    await _leaveGame();
+  }
+
+  Future<void> _leaveGame() async {
+    if (_isLeavingSession) return;
+
+    setState(() => _isLeavingSession = true);
+    final messenger = ScaffoldMessenger.of(context);
+    final router = GoRouter.of(context);
+
+    try {
+      await ref.read(sessionRepositoryProvider).leaveSession(widget.sessionId);
+      SocketService().leaveSession(sessionId: widget.sessionId);
+      await MediaSoupAudioService().leaveSession();
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('bg_active', false);
+      FlutterBackgroundService().invoke('stopService');
+
+      if (!mounted) return;
+      router.go(AppRoutes.home);
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('게임 나가기 실패: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      setState(() => _isLeavingSession = false);
+    }
   }
 
   @override
@@ -775,121 +838,128 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       }
     }
 
-    return Scaffold(
-      body: Stack(
-        children: [
-          // ── Naver Map ───────────────────────────────────────────────────
-          NaverMap(
-            options: NaverMapViewOptions(
-              initialCameraPosition: NCameraPosition(
-                target: myPos != null
-                    ? NLatLng(myPos.latitude, myPos.longitude)
-                    : const NLatLng(37.5665, 126.9780),
-                zoom: 14.0,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || _isLeavingSession) return;
+        unawaited(_confirmLeaveGame());
+      },
+      child: Scaffold(
+        body: Stack(
+          children: [
+            // ── Naver Map ───────────────────────────────────────────────────
+            NaverMap(
+              options: NaverMapViewOptions(
+                initialCameraPosition: NCameraPosition(
+                  target: myPos != null
+                      ? NLatLng(myPos.latitude, myPos.longitude)
+                      : const NLatLng(37.5665, 126.9780),
+                  zoom: 14.0,
+                ),
+                locationButtonEnable: false,
+                zoomGesturesEnable: true,
               ),
-              locationButtonEnable: false,
-              zoomGesturesEnable: true,
+              onMapReady: (controller) {
+                _mapController = controller;
+                if (_cachedMarkers.isNotEmpty) {
+                  _mapController!.addOverlayAll(_cachedMarkers);
+                }
+              },
+              onCameraChange: (reason, animated) {
+                if (reason == NCameraUpdateReason.gesture) {
+                  setState(() => _followMe = false);
+                }
+              },
             ),
-            onMapReady: (controller) {
-              _mapController = controller;
-              if (_cachedMarkers.isNotEmpty) {
-                _mapController!.addOverlayAll(_cachedMarkers);
-              }
-            },
-            onCameraChange: (reason, animated) {
-              if (reason == NCameraUpdateReason.gesture) {
-                setState(() => _followMe = false);
-              }
-            },
-          ),
 
-          // ── 상단 앱바 ─────────────────────────────────────────────────────
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: _TopBar(
-              sessionId: widget.sessionId,
-              sessionName: mapState.sessionName ?? '세션',
-              isConnected: mapState.isConnected,
-              hasEverConnected: mapState.hasEverConnected,
-              memberCount: mapState.members.length,
-              sharingEnabled: mapState.sharingEnabled,
-              myRole: mapState.myRole,
-              onSharingToggle: (enabled) => ref
-                  .read(mapSessionProvider(widget.sessionId).notifier)
-                  .toggleSharing(enabled),
-              onReconnect: () => ref
-                  .read(mapSessionProvider(widget.sessionId).notifier)
-                  .reconnect(),
-            ),
-          ),
-
-          // ── 오른쪽 FAB들 ──────────────────────────────────────────────────
-          MapFloatingControls(
-            followMe: _followMe,
-            bottomOffset: floatingControlsBottom,
-            onFollowPressed: () {
-              setState(() => _followMe = true);
-              if (myPos != null) {
-                _mapController?.updateCamera(
-                  NCameraUpdate.scrollAndZoomTo(
-                    target: NLatLng(myPos.latitude, myPos.longitude),
-                  )..setAnimation(animation: NCameraAnimation.easing),
-                );
-              }
-            },
-            onFitPressed: () => _fitAllMembers(mapState.members, myPos),
-          ),
-
-          // ── SOS 경고 배너 ─────────────────────────────────────────────────
-          MapOverlayLayer(
-            mapState: mapState,
-            amongUsState: amgState,
-            activeModules: activeModules,
-            authUserId: authUser?.id,
-            onKillAction: () => ref
-                .read(mapSessionProvider(widget.sessionId).notifier)
-                .sendKillAction(mapState.proximateTargetId!),
-            onOpenVote: () => ref
-                .read(mapSessionProvider(widget.sessionId).notifier)
-                .openVote((result) {
-              if (result['ok'] == true) return;
-
-              final error = result['error']?.toString() ?? '투표를 시작하지 못했습니다.';
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(error)),
-              );
-            }),
-            onCloseFinished: () {
-              final router = GoRouter.of(context);
-              if (router.canPop()) {
-                context.pop();
-                return;
-              }
-              context.go(AppRoutes.home);
-            },
-            bottomActionOffset: overlayBottomOffset,
-            showTopStatus: isDefaultMode,
-          ),
-
-          if (amgState.isStarted && !isDefaultMode)
+            // ── 상단 앱바 ─────────────────────────────────────────────────────
             Positioned(
-              top: MediaQuery.of(context).padding.top + 86,
-              left: 16,
-              right: 16,
-              child: _GameInfoStrip(
-                role: amgState.myRole,
-                aliveCount: mapState.gameState.aliveCount,
-                roundNumber: activeModules.contains('round')
-                    ? mapState.gameState.roundNumber
-                    : null,
-                missionText: activeModules.contains('mission')
-                    ? '미션 $completed / $total ($percentLabel%)'
-                    : null,
+              top: 0,
+              left: 0,
+              right: 0,
+              child: _TopBar(
+                sessionId: widget.sessionId,
+                sessionName: mapState.sessionName ?? '세션',
+                isConnected: mapState.isConnected,
+                hasEverConnected: mapState.hasEverConnected,
+                memberCount: mapState.members.length,
+                sharingEnabled: mapState.sharingEnabled,
+                myRole: mapState.myRole,
+                onBack: _confirmLeaveGame,
+                onSharingToggle: (enabled) => ref
+                    .read(mapSessionProvider(widget.sessionId).notifier)
+                    .toggleSharing(enabled),
+                onReconnect: () => ref
+                    .read(mapSessionProvider(widget.sessionId).notifier)
+                    .reconnect(),
               ),
             ),
-          /* if (amgState.isStarted)
+
+            // ── 오른쪽 FAB들 ──────────────────────────────────────────────────
+            MapFloatingControls(
+              followMe: _followMe,
+              bottomOffset: floatingControlsBottom,
+              onFollowPressed: () {
+                setState(() => _followMe = true);
+                if (myPos != null) {
+                  _mapController?.updateCamera(
+                    NCameraUpdate.scrollAndZoomTo(
+                      target: NLatLng(myPos.latitude, myPos.longitude),
+                    )..setAnimation(animation: NCameraAnimation.easing),
+                  );
+                }
+              },
+              onFitPressed: () => _fitAllMembers(mapState.members, myPos),
+            ),
+
+            // ── SOS 경고 배너 ─────────────────────────────────────────────────
+            MapOverlayLayer(
+              mapState: mapState,
+              amongUsState: amgState,
+              activeModules: activeModules,
+              authUserId: authUser?.id,
+              onKillAction: () => ref
+                  .read(mapSessionProvider(widget.sessionId).notifier)
+                  .sendKillAction(mapState.proximateTargetId!),
+              onOpenVote: () => ref
+                  .read(mapSessionProvider(widget.sessionId).notifier)
+                  .openVote((result) {
+                if (result['ok'] == true) return;
+
+                final error = result['error']?.toString() ?? '투표를 시작하지 못했습니다.';
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(error)),
+                );
+              }),
+              onCloseFinished: () {
+                final router = GoRouter.of(context);
+                if (router.canPop()) {
+                  context.pop();
+                  return;
+                }
+                context.go(AppRoutes.home);
+              },
+              bottomActionOffset: overlayBottomOffset,
+              showTopStatus: isDefaultMode,
+            ),
+
+            if (amgState.isStarted && !isDefaultMode)
+              Positioned(
+                top: MediaQuery.of(context).padding.top + 86,
+                left: 16,
+                right: 16,
+                child: _GameInfoStrip(
+                  role: amgState.myRole,
+                  aliveCount: mapState.gameState.aliveCount,
+                  roundNumber: activeModules.contains('round')
+                      ? mapState.gameState.roundNumber
+                      : null,
+                  missionText: activeModules.contains('mission')
+                      ? '미션 $completed / $total ($percentLabel%)'
+                      : null,
+                ),
+              ),
+            /* if (amgState.isStarted)
             Positioned(
               top: 96,
               left: 0,
@@ -932,88 +1002,89 @@ class _MapScreenState extends ConsumerState<MapScreen> {
               ),
             ), */
 
-          if (mapState.myRole == 'host' &&
-              mapState.gameState.status == 'none' &&
-              !amgState.isStarted)
-            Positioned(
-              right: 16,
-              bottom: 120,
-              child: FloatingActionButton.extended(
-                heroTag: 'start_game',
-                backgroundColor: Colors.green,
-                foregroundColor: Colors.white,
-                onPressed: () => ref
-                    .read(gameProvider(widget.sessionId).notifier)
-                    .startGame(),
-                icon: const Icon(Icons.play_arrow),
-                label: const Text(
-                  '게임 시작',
-                  style: TextStyle(fontWeight: FontWeight.bold),
+            if (mapState.myRole == 'host' &&
+                mapState.gameState.status == 'none' &&
+                !amgState.isStarted)
+              Positioned(
+                right: 16,
+                bottom: 120,
+                child: FloatingActionButton.extended(
+                  heroTag: 'start_game',
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white,
+                  onPressed: () => ref
+                      .read(gameProvider(widget.sessionId).notifier)
+                      .startGame(),
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text(
+                    '게임 시작',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
                 ),
               ),
-            ),
 
-          if (showAiChat)
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
-              child: AIChatPanel(
-                sessionId: widget.sessionId,
-                height: aiChatHeight,
-                isGhostMode: mapState.isEliminated,
-                onDragUpdate: (details) =>
-                    _handleAiChatDragUpdate(details, expandedAiChatHeight),
-                onDragEnd: (details) =>
-                    _handleAiChatDragEnd(details, expandedAiChatHeight),
-                onHandleTap: () => _toggleAiChatHeight(expandedAiChatHeight),
-                handleLabel: aiChatHeight >= expandedAiChatHeight - 24
-                    ? '아래로 내려 접기'
-                    : '위로 끌어올려 더 보기',
+            if (showAiChat)
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: AIChatPanel(
+                  sessionId: widget.sessionId,
+                  height: aiChatHeight,
+                  isGhostMode: mapState.isEliminated,
+                  onDragUpdate: (details) =>
+                      _handleAiChatDragUpdate(details, expandedAiChatHeight),
+                  onDragEnd: (details) =>
+                      _handleAiChatDragEnd(details, expandedAiChatHeight),
+                  onHandleTap: () => _toggleAiChatHeight(expandedAiChatHeight),
+                  handleLabel: aiChatHeight >= expandedAiChatHeight - 24
+                      ? '아래로 내려 접기'
+                      : '위로 끌어올려 더 보기',
+                ),
               ),
-            ),
 
-          // ── 회의 화면 오버레이 ──────────────────────────────────────────
-          if (amgState.meetingPhase != 'none')
-            Positioned.fill(
-              child: GameMeetingScreen(
-                sessionId: widget.sessionId,
-                memberNames: {
-                  for (final e in mapState.members.entries)
-                    e.key: e.value.nickname,
-                },
-                myUserId: authUser?.id ?? '',
+            // ── 회의 화면 오버레이 ──────────────────────────────────────────
+            if (amgState.meetingPhase != 'none')
+              Positioned.fill(
+                child: GameMeetingScreen(
+                  sessionId: widget.sessionId,
+                  memberNames: {
+                    for (final e in mapState.members.entries)
+                      e.key: e.value.nickname,
+                  },
+                  myUserId: authUser?.id ?? '',
+                ),
               ),
-            ),
 
-          // ── 하단 멤버 패널 ─────────────────────────────────────────────────
-          if (showMemberPanel)
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
-              child: MapBottomMemberPanel(
-                members: mapState.members.values.toList(),
-                myPosition: myPos,
-                hiddenMembers: mapState.hiddenMembers,
-                eliminatedUserIds: mapState.eliminatedUserIds,
-                onSOS: () => _confirmSOS(context, ref),
-                onMemberTap: (member) {
-                  if (member.lat == 0 && member.lng == 0) return;
-                  setState(() => _followMe = false);
-                  _mapController?.updateCamera(
-                    NCameraUpdate.scrollAndZoomTo(
-                      target: NLatLng(member.lat, member.lng),
-                      zoom: 15,
-                    )..setAnimation(animation: NCameraAnimation.easing),
-                  );
-                },
-                onHideToggle: (userId) => ref
-                    .read(mapSessionProvider(widget.sessionId).notifier)
-                    .toggleHideMember(userId),
+            // ── 하단 멤버 패널 ─────────────────────────────────────────────────
+            if (showMemberPanel)
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: MapBottomMemberPanel(
+                  members: mapState.members.values.toList(),
+                  myPosition: myPos,
+                  hiddenMembers: mapState.hiddenMembers,
+                  eliminatedUserIds: mapState.eliminatedUserIds,
+                  onSOS: () => _confirmSOS(context, ref),
+                  onMemberTap: (member) {
+                    if (member.lat == 0 && member.lng == 0) return;
+                    setState(() => _followMe = false);
+                    _mapController?.updateCamera(
+                      NCameraUpdate.scrollAndZoomTo(
+                        target: NLatLng(member.lat, member.lng),
+                        zoom: 15,
+                      )..setAnimation(animation: NCameraAnimation.easing),
+                    );
+                  },
+                  onHideToggle: (userId) => ref
+                      .read(mapSessionProvider(widget.sessionId).notifier)
+                      .toggleHideMember(userId),
+                ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1191,6 +1262,7 @@ class _TopBar extends StatelessWidget {
     required this.memberCount,
     required this.sharingEnabled,
     required this.myRole,
+    required this.onBack,
     required this.onSharingToggle,
     this.onReconnect,
   });
@@ -1202,6 +1274,7 @@ class _TopBar extends StatelessWidget {
   final int memberCount;
   final bool sharingEnabled;
   final String myRole;
+  final Future<void> Function() onBack;
   final ValueChanged<bool> onSharingToggle;
   final VoidCallback? onReconnect;
 
@@ -1241,7 +1314,9 @@ class _TopBar extends StatelessWidget {
           // 뒤로가기
           IconButton(
             icon: const Icon(Icons.arrow_back),
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () {
+              unawaited(onBack());
+            },
             visualDensity: VisualDensity.compact,
           ),
           const SizedBox(width: 8),

@@ -362,6 +362,22 @@ class SocketService {
     _socket?.emit(SocketEvents.joinSession, {'sessionId': sessionId});
   }
 
+  void leaveSession({
+    String? sessionId,
+    bool notifyServer = true,
+  }) {
+    final targetSessionId = sessionId ?? _currentSessionId;
+    if (targetSessionId == null) return;
+
+    if (notifyServer && _isConnected) {
+      _socket?.emit(SocketEvents.leaveSession, {'sessionId': targetSessionId});
+    }
+
+    if (_currentSessionId == targetSessionId) {
+      _currentSessionId = null;
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // 내 위치 전송 (GPS / BLE / UWB 공통)
   // ─────────────────────────────────────────────────────────────────────────

@@ -1,12 +1,16 @@
 // lib/features/lobby/presentation/lobby_screen.dart
 
 import 'dart:async';
+
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../../core/services/mediasoup_audio_service.dart';
 import '../../../core/services/socket_service.dart';
 import '../../auth/data/auth_repository.dart';
 import '../../home/data/session_repository.dart';
@@ -30,11 +34,7 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
   Timer? _countdownTimer;
   String _countdownText = '--:--:--';
   bool _startingGame = false;
-
-  // 이전 isGameStarted 값 추적 (중복 navigate 방지)
   bool _didNavigateToMap = false;
-
-  // kicked 구독
   StreamSubscription? _kickedSub;
 
   @override
@@ -44,17 +44,24 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
       _updateCountdown();
     });
 
-    // kicked 이벤트 → 홈으로 이동
-    _kickedSub = SocketService().onKicked.listen((_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('세션에서 강제 퇴장되었습니다.'),
-            backgroundColor: Colors.red,
-          ),
-        );
-        context.go('/');
+    _kickedSub = SocketService().onKicked.listen((_) async {
+      await _releaseRealtimeResources(notifyServer: false);
+      if (!mounted) return;
+
+      try {
+        await ref.read(sessionListProvider.notifier).refresh();
+      } catch (e) {
+        debugPrint('[Lobby] Failed to refresh sessions after kick: $e');
       }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('세션에서 강제 퇴장되었습니다.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      context.go('/');
     });
   }
 
@@ -89,13 +96,11 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
     final lobbyState = ref.watch(lobbyProvider(widget.sessionId));
     final authUser = ref.watch(authProvider).valueOrNull;
 
-    // 게임 시작 → 맵으로 이동 (한 번만)
     if (lobbyState.isGameStarted && !_didNavigateToMap) {
       _didNavigateToMap = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          context
-              .go('/game/${widget.sessionId}?type=${widget.sessionType.name}');
+          context.go('/game/${widget.sessionId}?type=${widget.sessionType.name}');
         }
       });
     }
@@ -114,138 +119,149 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
     final currentCount = members.length;
     final canStart = currentCount >= minPlayers;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('대기실'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => _confirmLeave(context),
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.exit_to_app),
-            tooltip: '세션 나가기',
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _confirmLeave(context);
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('대기실'),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
             onPressed: () => _confirmLeave(context),
           ),
-        ],
-      ),
-      body: lobbyState.isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: () =>
-                  ref.read(lobbyProvider(widget.sessionId).notifier).refresh(),
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // ── 상단: 세션 정보 ─────────────────────────────────────
-                    _SessionInfoSection(
-                      session: session,
-                      countdownText: _countdownText,
-                      sessionType: widget.sessionType,
-                    ),
-                    const SizedBox(height: 20),
-
-                    // ── 중단: 참가자 목록 ────────────────────────────────────
-                    _ParticipantListSection(
-                      members: members,
-                      myUserId: myUserId,
-                      isHost: isHost,
-                      sessionId: widget.sessionId,
-                    ),
-                    const SizedBox(height: 24),
-
-                    // ── 하단: 액션 버튼 ──────────────────────────────────────
-                    if (isHost) ...[
-                      // 게임 시작 버튼 (호스트만)
-                      if (!canStart)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Text(
-                            '최소 $minPlayers명 필요 (현재 $currentCount명)',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                                color: Colors.orange, fontSize: 13),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.exit_to_app),
+              tooltip: '세션 나가기',
+              onPressed: () => _confirmLeave(context),
+            ),
+          ],
+        ),
+        body: lobbyState.isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : RefreshIndicator(
+                onRefresh: () =>
+                    ref.read(lobbyProvider(widget.sessionId).notifier).refresh(),
+                child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _SessionInfoSection(
+                        session: session,
+                        countdownText: _countdownText,
+                        sessionType: widget.sessionType,
+                      ),
+                      const SizedBox(height: 20),
+                      _ParticipantListSection(
+                        members: members,
+                        myUserId: myUserId,
+                        isHost: isHost,
+                        sessionId: widget.sessionId,
+                      ),
+                      const SizedBox(height: 24),
+                      if (!lobbyState.isGameStarted) ...[
+                        _AudioCheckSection(sessionId: widget.sessionId),
+                        const SizedBox(height: 20),
+                      ],
+                      if (isHost) ...[
+                        if (!canStart)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: Text(
+                              '최소 $minPlayers명 필요 (현재 $currentCount명)',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: Colors.orange,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ElevatedButton.icon(
+                          onPressed: (canStart && !_startingGame)
+                              ? () => _startGame(context)
+                              : null,
+                          icon: _startingGame
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Icon(Icons.play_arrow),
+                          label: const Text(
+                            '게임 시작',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            backgroundColor:
+                                canStart ? Colors.green : Colors.grey,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
                           ),
                         ),
-                      ElevatedButton.icon(
-                        onPressed: (canStart && !_startingGame)
-                            ? () => _startGame(context)
-                            : null,
-                        icon: _startingGame
-                            ? const SizedBox(
+                      ] else ...[
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: Colors.blue.withValues(alpha: 0.2),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const SizedBox(
                                 width: 18,
                                 height: 18,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2, color: Colors.white),
-                              )
-                            : const Icon(Icons.play_arrow),
-                        label: const Text('게임 시작',
-                            style: TextStyle(
-                                fontSize: 16, fontWeight: FontWeight.bold)),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          backgroundColor:
-                              canStart ? Colors.green : Colors.grey,
-                          foregroundColor: Colors.white,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                              const SizedBox(width: 12),
+                              Text(
+                                '방장이 게임을 시작하길 기다리는 중',
+                                style: TextStyle(
+                                  color: Colors.blue[700],
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: session != null
+                            ? () => _shareInviteCode(session.code)
+                            : null,
+                        icon: const Icon(Icons.share),
+                        label: const Text('초대 코드 공유'),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),
                         ),
                       ),
-                    ] else ...[
-                      // 비호스트: 대기 메시지
-                      Container(
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.blue.withValues(alpha: 0.08),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                              color: Colors.blue.withValues(alpha: 0.2)),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                            const SizedBox(width: 12),
-                            Text(
-                              '방장이 게임을 시작하길 기다리는 중',
-                              style: TextStyle(
-                                color: Colors.blue[700],
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
+                      const SizedBox(height: 32),
                     ],
-                    const SizedBox(height: 12),
-
-                    // 초대 버튼
-                    OutlinedButton.icon(
-                      onPressed: session != null
-                          ? () => _shareInviteCode(session.code)
-                          : null,
-                      icon: const Icon(Icons.share),
-                      label: const Text('초대 코드 공유'),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 32),
-                  ],
+                  ),
                 ),
               ),
-            ),
+      ),
     );
   }
 
@@ -264,12 +280,26 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _startingGame = false);
+      if (mounted) {
+        setState(() => _startingGame = false);
+      }
     }
   }
 
   void _shareInviteCode(String code) {
     Share.share('세션 초대 코드: $code\n앱에서 코드를 입력해 참가하세요!');
+  }
+
+  Future<void> _releaseRealtimeResources({
+    required bool notifyServer,
+  }) async {
+    try {
+      await ref
+          .read(lobbyProvider(widget.sessionId).notifier)
+          .releaseRealtimeResources(notifyServer: notifyServer);
+    } catch (e) {
+      debugPrint('[Lobby] Failed to release realtime resources: $e');
+    }
   }
 
   void _confirmLeave(BuildContext context) {
@@ -292,7 +322,9 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
                 await ref
                     .read(sessionRepositoryProvider)
                     .leaveSession(widget.sessionId);
+                await _releaseRealtimeResources(notifyServer: true);
                 await ref.read(sessionListProvider.notifier).refresh();
+                if (!mounted) return;
                 router.go('/');
               } catch (e) {
                 messenger.showSnackBar(
@@ -314,10 +346,6 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
     );
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 세션 정보 섹션
-// ─────────────────────────────────────────────────────────────────────────────
 
 class _SessionInfoSection extends StatelessWidget {
   const _SessionInfoSection({
@@ -367,8 +395,6 @@ class _SessionInfoSection extends StatelessWidget {
               style: TextStyle(color: Colors.grey[600], fontSize: 13),
             ),
             const SizedBox(height: 16),
-
-            // 초대 코드
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -398,13 +424,14 @@ class _SessionInfoSection extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
-
-            // 카운트다운
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.timer_outlined,
-                    size: 16, color: Colors.orange),
+                const Icon(
+                  Icons.timer_outlined,
+                  size: 16,
+                  color: Colors.orange,
+                ),
                 const SizedBox(width: 6),
                 Text(
                   '남은 시간: $countdownText',
@@ -423,10 +450,6 @@ class _SessionInfoSection extends StatelessWidget {
     );
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 참가자 목록 섹션
-// ─────────────────────────────────────────────────────────────────────────────
 
 class _ParticipantListSection extends ConsumerWidget {
   const _ParticipantListSection({
@@ -485,7 +508,6 @@ class _ParticipantListSection extends ConsumerWidget {
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Row(
                 children: [
-                  // 온라인 인디케이터 (소켓 연결 여부 간접 표시 — 목록에 있으면 온라인)
                   Container(
                     width: 10,
                     height: 10,
@@ -495,8 +517,6 @@ class _ParticipantListSection extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(width: 10),
-
-                  // 닉네임
                   Expanded(
                     child: Text(
                       '${member.nickname}${isMe ? ' (나)' : ''}',
@@ -505,8 +525,6 @@ class _ParticipantListSection extends ConsumerWidget {
                       ),
                     ),
                   ),
-
-                  // 역할 배지
                   Container(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -519,25 +537,27 @@ class _ParticipantListSection extends ConsumerWidget {
                       style: const TextStyle(color: Colors.white, fontSize: 11),
                     ),
                   ),
-
-                  // 호스트 관리 버튼
                   if (canManage) ...[
                     const SizedBox(width: 4),
-                    // 어드민 승격
                     if (member.role != 'admin')
                       IconButton(
-                        icon: const Icon(Icons.star_border,
-                            size: 18, color: Colors.purple),
+                        icon: const Icon(
+                          Icons.star_border,
+                          size: 18,
+                          color: Colors.purple,
+                        ),
                         tooltip: '관리자로 승격',
                         visualDensity: VisualDensity.compact,
                         onPressed: () => ref
                             .read(lobbyProvider(sessionId).notifier)
                             .promoteToAdmin(member.userId),
                       ),
-                    // 강퇴
                     IconButton(
-                      icon: const Icon(Icons.remove_circle_outline,
-                          size: 18, color: Colors.red),
+                      icon: const Icon(
+                        Icons.remove_circle_outline,
+                        size: 18,
+                        color: Colors.red,
+                      ),
                       tooltip: '강퇴',
                       visualDensity: VisualDensity.compact,
                       onPressed: () => _confirmKick(context, ref, member),
@@ -593,6 +613,185 @@ class _ParticipantListSection extends ConsumerWidget {
             child: const Text('강퇴'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+enum _CheckPhase {
+  idle,
+  checkingPermission,
+  checkingServer,
+  testingSound,
+  done,
+  failed,
+}
+
+class _AudioCheckSection extends StatefulWidget {
+  const _AudioCheckSection({required this.sessionId});
+
+  final String sessionId;
+
+  @override
+  State<_AudioCheckSection> createState() => _AudioCheckSectionState();
+}
+
+class _AudioCheckSectionState extends State<_AudioCheckSection> {
+  _CheckPhase _phase = _CheckPhase.idle;
+  String _statusText = '게임 시작 전에 마이크 및 스피커를 미리 점검할 수 있습니다.';
+  String? _detailText;
+  final AudioPlayer _audioPlayer = AudioPlayer();
+
+  @override
+  void dispose() {
+    _audioPlayer.dispose();
+    super.dispose();
+  }
+
+  bool get _isRunning =>
+      _phase == _CheckPhase.checkingPermission ||
+      _phase == _CheckPhase.checkingServer ||
+      _phase == _CheckPhase.testingSound;
+
+  String get _phaseLabel => switch (_phase) {
+        _CheckPhase.checkingPermission => '마이크 권한 확인 중',
+        _CheckPhase.checkingServer => '미디어 서버 연결 확인 중',
+        _CheckPhase.testingSound => '스피커 출력 테스트 중',
+        _ => '',
+      };
+
+  Color get _statusColor => switch (_phase) {
+        _CheckPhase.done => Colors.green[700]!,
+        _CheckPhase.failed => Colors.red[700]!,
+        _ => Colors.blue[700]!,
+      };
+
+  Future<void> _runCheck() async {
+    if (_isRunning) return;
+
+    _setPhase(_CheckPhase.checkingPermission, '마이크 권한을 확인하는 중입니다.');
+
+    final permissionStatus = await Permission.microphone.request();
+    if (!permissionStatus.isGranted) {
+      _setPhase(
+        _CheckPhase.failed,
+        '마이크 권한이 거부되었습니다.',
+        detail: '기기 설정에서 마이크 권한을 허용한 후 다시 시도해 주세요.',
+      );
+      return;
+    }
+
+    _setPhase(_CheckPhase.checkingServer, '미디어 서버에 연결하는 중입니다.');
+
+    try {
+      await MediaSoupAudioService().ensureJoined(widget.sessionId);
+    } catch (e) {
+      _setPhase(
+        _CheckPhase.failed,
+        '미디어 서버 연결에 실패하였습니다.',
+        detail: e.toString().replaceFirst(RegExp(r'^StateError: '), ''),
+      );
+      return;
+    }
+
+    _setPhase(
+      _CheckPhase.testingSound,
+      '스피커 출력을 테스트하는 중입니다. 소리가 들리면 정상입니다.',
+    );
+
+    try {
+      await _audioPlayer.play(AssetSource('sounds/emergency.mp3'));
+      await _audioPlayer.onPlayerComplete.first
+          .timeout(const Duration(seconds: 8));
+    } catch (_) {
+      _setPhase(
+        _CheckPhase.done,
+        '마이크 연결은 정상입니다. 테스트 사운드 재생에 실패하였습니다.',
+        detail: '기기 볼륨 및 사운드 설정을 확인해 주세요.',
+      );
+      return;
+    }
+
+    _setPhase(
+      _CheckPhase.done,
+      '마이크 연결 및 스피커 출력이 정상적으로 확인되었습니다.',
+    );
+  }
+
+  void _setPhase(_CheckPhase phase, String status, {String? detail}) {
+    if (!mounted) return;
+    setState(() {
+      _phase = phase;
+      _statusText = status;
+      _detailText = detail;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 1,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              '오디오 및 마이크 점검',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              _statusText,
+              style: TextStyle(fontSize: 13, color: _statusColor),
+            ),
+            if (_detailText != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                _detailText!,
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                if (_isRunning) ...[
+                  const SizedBox(
+                    width: 15,
+                    height: 15,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _phaseLabel,
+                      style: const TextStyle(fontSize: 12),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ] else
+                  const Spacer(),
+                ElevatedButton(
+                  onPressed: _isRunning ? null : _runCheck,
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 10,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  child: Text(
+                    _phase == _CheckPhase.idle ? '점검 시작' : '다시 점검',
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

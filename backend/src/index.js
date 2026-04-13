@@ -55,13 +55,12 @@ fastify.setErrorHandler((error, request, reply) => {
 // 서버 시작
 const start = async () => {
   try {
-    await connectRedis();
-
-    await dbQuery('SELECT NOW()');
-    console.log('[DB] PostgreSQL connected');
-
-    // Fastify 초기화 먼저
-    await fastify.ready();
+    // connectRedis, DB 연결 확인, fastify 플러그인 준비는 상호 독립적 → 병렬 실행
+    await Promise.all([
+      connectRedis(),
+      dbQuery('SELECT NOW()').then(() => console.log('[DB] PostgreSQL connected')),
+      fastify.ready(),
+    ]);
 
     // Socket.IO를 Fastify 내부 서버에 직접 붙이기
     const io = createSocketServer(fastify.server);

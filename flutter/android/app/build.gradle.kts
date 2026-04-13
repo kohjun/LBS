@@ -41,6 +41,14 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    packaging {
+        jniLibs {
+            // Store .so files uncompressed so the OS can mmap them directly from the APK
+            // at their native ELF alignment — required for 16 KB page-size devices (Android 15+).
+            useLegacyPackaging = false
+        }
+    }
 }
 
 flutter {

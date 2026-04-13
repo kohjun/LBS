@@ -4,35 +4,48 @@ import { chat } from './LLMClient.js';
 import { SYSTEM_PROMPT, PROMPTS } from './prompt.js';
 import { retrieve } from './rag/ragRetriever.js';
 import { GamePluginRegistry } from '../game/index.js';
+import { redisClient } from '../config/redis.js';
 
 const PRIMARY_MODEL = 'gemini-2.5-flash';
 const RETRY_DELAYS_MS = [1000, 2000, 4000];
 
-const cooldowns = new Map();
-const conversationHistory = new Map();
 const MAX_TURNS = 10;
+const HISTORY_TTL_SECONDS = 60 * 60 * 24;
+// Redis 키 프리픽스
+const COOLDOWN_PREFIX = 'ai:cooldown:';
+const HISTORY_PREFIX  = 'ai:history:';
 
-function isOnCooldown(key, ms = 5000) {
-  const last = cooldowns.get(key) || 0;
-  if (Date.now() - last < ms) return true;
-  cooldowns.set(key, Date.now());
-  return false;
+/**
+ * Redis SET + EX 기반 쿨다운 체크.
+ * 키가 이미 존재하면 쿨다운 중(true), 없으면 키를 심고 false 반환.
+ */
+async function isOnCooldown(key, ms = 5000) {
+  const redisKey = `${COOLDOWN_PREFIX}${key}`;
+  const ttlSeconds = Math.ceil(ms / 1000);
+  // SET NX EX: 키가 없을 때만 삽입. 삽입 성공 → 쿨다운 아님, null 반환 → 쿨다운 중
+  const result = await redisClient.set(redisKey, '1', { NX: true, EX: ttlSeconds });
+  return result === null; // null이면 이미 존재(쿨다운 중)
 }
 
-function getHistory(roomId, userId) {
-  const key = `${roomId}_${userId}`;
-  if (!conversationHistory.has(key)) {
-    conversationHistory.set(key, []);
-  }
-  return conversationHistory.get(key);
+/**
+ * Redis List(LPUSH)에서 대화 기록 읽기.
+ * LPUSH는 최신을 앞에 저장하므로 LRANGE 후 reverse해 시간순으로 반환.
+ */
+async function getHistory(roomId, userId) {
+  const key = `${HISTORY_PREFIX}${roomId}:${userId}`;
+  const items = await redisClient.lRange(key, 0, -1);
+  return items.reverse().map((item) => JSON.parse(item));
 }
 
-function addHistory(roomId, userId, role, content) {
-  const history = getHistory(roomId, userId);
-  history.push({ role, content });
-  if (history.length > MAX_TURNS * 2) {
-    history.splice(0, 2);
-  }
+/**
+ * Redis List(LPUSH)에 메시지 추가 후 LTRIM으로 MAX_TURNS 유지.
+ * LPUSH 특성상 최신 항목이 인덱스 0에 위치하며, LTRIM 0 ~(MAX_TURNS*2-1)로 잘라낸다.
+ */
+async function addHistory(roomId, userId, role, content) {
+  const key = `${HISTORY_PREFIX}${roomId}:${userId}`;
+  await redisClient.lPush(key, JSON.stringify({ role, content }));
+  await redisClient.lTrim(key, 0, MAX_TURNS * 2 - 1);
+  await redisClient.expire(key, HISTORY_TTL_SECONDS);
 }
 
 function sleep(ms) {
@@ -172,10 +185,14 @@ async function ask(room, player, question) {
       `\n[현재 게임 상황]\n${plugin.buildStateContext(room, player)}`,
     ].join('\n');
 
-    const history = getHistory(room.roomId, player.userId).map((message) => ({
+    // Redis에서 전체 기록 로드 후 Gemini 포맷으로 변환
+    const allHistory = (await getHistory(room.roomId, player.userId)).map((message) => ({
       role: message.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: message.content }],
     }));
+
+    // 토큰 절감: Gemini에는 최신 4개 항목(≈2턴)만 주입
+    const history = allHistory.slice(-4);
 
     const answer = await askWithRetry({
       systemPrompt,
@@ -183,8 +200,8 @@ async function ask(room, player, question) {
       question,
     });
 
-    addHistory(room.roomId, player.userId, 'user', question);
-    addHistory(room.roomId, player.userId, 'assistant', answer);
+    await addHistory(room.roomId, player.userId, 'user', question);
+    await addHistory(room.roomId, player.userId, 'assistant', answer);
 
     return { answer, sources, isError: false };
   } catch (error) {
@@ -193,15 +210,15 @@ async function ask(room, player, question) {
   }
 }
 
-function clearHistory(roomId, userId) {
-  conversationHistory.delete(`${roomId}_${userId}`);
+async function clearHistory(roomId, userId) {
+  await redisClient.del(`${HISTORY_PREFIX}${roomId}:${userId}`);
 }
 
-function cleanupRoom(roomId) {
-  for (const key of conversationHistory.keys()) {
-    if (key.startsWith(`${roomId}_`)) {
-      conversationHistory.delete(key);
-    }
+async function cleanupRoom(roomId) {
+  // KEYS는 소규모 데이터에 한해 허용; 대규모 환경에서는 SCAN으로 교체 권장
+  const keys = await redisClient.keys(`${HISTORY_PREFIX}${roomId}:*`);
+  if (keys.length > 0) {
+    await redisClient.del(keys);
   }
 }
 
@@ -221,7 +238,7 @@ async function onGameStart(room) {
 }
 
 async function onKill(room, killer, target) {
-  if (isOnCooldown(`${room.roomId}_kill`, 3000)) return null;
+  if (await isOnCooldown(`${room.roomId}_kill`, 3000)) return null;
 
   const alivePlayerIds = room.alivePlayerIds ?? [];
   const impostors = room.impostors ?? [];

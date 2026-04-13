@@ -27,7 +27,10 @@ dependencies:
   # 위치
   geolocator: ^11.0.0              # GPS
   permission_handler: ^11.3.1      # 권한 요청
-  mediasoup_client_flutter: ^0.8.5
+  
+  # 💡 [수정됨] 캐시 대신 내부 packages 폴더의 코드를 사용합니다.
+  mediasoup_client_flutter:
+    path: ./packages/mediasoup_client_flutter
 
   # 로컬 저장소
   flutter_secure_storage: ^9.0.0   # JWT 토큰 보안 저장
@@ -75,3 +78,9 @@ flutter:
   assets:
     - assets/images/
     - assets/sounds/
+
+dependency_overrides:
+  # 💡 [수정됨] 캐시 대신 내부 packages 폴더의 코드를 사용합니다.
+  flutter_webrtc:
+    path: ./packages/flutter_webrtc
+  webrtc_interface: '1.5.1'

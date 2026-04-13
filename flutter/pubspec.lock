@@ -289,6 +289,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.1.1"
+  dart_webrtc:
+    dependency: transitive
+    description:
+      name: dart_webrtc
+      sha256: f6d615bddea5e458ce180a914f3055c234ffb52fb7397a51b3491e76d6d7edb2
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.8.1"
   dbus:
     dependency: transitive
     description:
@@ -313,6 +321,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.1.2"
+  events2:
+    dependency: transitive
+    description:
+      name: events2
+      sha256: "41eec2689af52ecd2581494b9241589769b2873359909c9260588e51fbc188e7"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.0"
   fake_async:
     dependency: transitive
     description:
@@ -552,6 +568,13 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  flutter_webrtc:
+    dependency: "direct overridden"
+    description:
+      path: "packages/flutter_webrtc"
+      relative: true
+    source: path
+    version: "1.4.1"
   freezed:
     dependency: "direct dev"
     description:
@@ -648,6 +671,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.3.2"
+  h264_profile_level_id:
+    dependency: transitive
+    description:
+      name: h264_profile_level_id
+      sha256: "6ca49f1f27e69dda2c3cd1bfabb3a0afb959d171e0d4c530f76147f2123ce0af"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.2.0"
   hive:
     dependency: transitive
     description:
@@ -768,6 +799,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "4.0.0"
+  logger:
+    dependency: transitive
+    description:
+      name: logger
+      sha256: "25aee487596a6257655a1e091ec2ae66bc30e7af663592cc3a27e6591e05035c"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.7.0"
   logging:
     dependency: transitive
     description:
@@ -792,6 +831,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.13.0"
+  mediasoup_client_flutter:
+    dependency: "direct main"
+    description:
+      path: "packages/mediasoup_client_flutter"
+      relative: true
+    source: path
+    version: "0.8.5"
   meta:
     dependency: transitive
     description:
@@ -1032,6 +1078,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.6.4"
+  sdp_transform:
+    dependency: transitive
+    description:
+      name: sdp_transform
+      sha256: "73e412a5279a5c2de74001535208e20fff88f225c9a4571af0f7146202755e45"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.3.2"
   share_plus:
     dependency: "direct main"
     description:
@@ -1365,6 +1419,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.3"
+  webrtc_interface:
+    dependency: "direct overridden"
+    description:
+      name: webrtc_interface
+      sha256: c6f100eac5057d9a817a60473126f9828c796d42884d498af4f339c97b21014f
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.5.1"
   win32:
     dependency: transitive
     description:

@@ -35,10 +35,10 @@ class LobbyState {
     Map<String, dynamic>? gameStartPayload,
   }) {
     return LobbyState(
-      members:          members         ?? this.members,
-      isGameStarted:    isGameStarted   ?? this.isGameStarted,
-      sessionInfo:      sessionInfo     ?? this.sessionInfo,
-      isLoading:        isLoading       ?? this.isLoading,
+      members: members ?? this.members,
+      isGameStarted: isGameStarted ?? this.isGameStarted,
+      sessionInfo: sessionInfo ?? this.sessionInfo,
+      isLoading: isLoading ?? this.isLoading,
       gameStartPayload: gameStartPayload ?? this.gameStartPayload,
     );
   }
@@ -70,7 +70,6 @@ class LobbyNotifier extends StateNotifier<LobbyState> {
     try {
       await _socket.connect();
       _socket.joinSession(_sessionId);
-      unawaited(_audio.ensureJoined(_sessionId));
     } catch (e) {
       debugPrint('[Lobby] Socket connect failed: $e');
     }
@@ -84,9 +83,9 @@ class LobbyNotifier extends StateNotifier<LobbyState> {
 
   void _bindSocketStreams() {
     _memberJoinSub = _socket.onMemberJoined.listen((data) {
-      final userId   = data['userId']   as String? ?? '';
+      final userId = data['userId'] as String? ?? '';
       final nickname = data['nickname'] as String? ?? userId;
-      final role     = data['role']     as String? ?? 'member';
+      final role = data['role'] as String? ?? 'member';
       if (userId.isEmpty) return;
 
       final exists = state.members.any((m) => m.userId == userId);
@@ -95,10 +94,10 @@ class LobbyNotifier extends StateNotifier<LobbyState> {
           members: [
             ...state.members,
             SessionMember(
-              userId:   userId,
+              userId: userId,
               nickname: nickname,
-              isHost:   role == 'host',
-              role:     role,
+              isHost: role == 'host',
+              role: role,
             ),
           ],
         );
@@ -120,7 +119,7 @@ class LobbyNotifier extends StateNotifier<LobbyState> {
 
     _gameStartedSub = _socket.onGameStarted.listen((data) {
       state = state.copyWith(
-        isGameStarted:    true,
+        isGameStarted: true,
         gameStartPayload: data,
       );
     });
@@ -128,22 +127,23 @@ class LobbyNotifier extends StateNotifier<LobbyState> {
     _connectionSub = _socket.onConnectionChange.listen((connected) {
       if (connected) {
         _socket.joinSession(_sessionId);
-        unawaited(_audio.ensureJoined(_sessionId));
       }
     });
   }
 
   Future<void> _loadSession() async {
     try {
-      final repo    = _ref.read(sessionRepositoryProvider);
+      final repo = _ref.read(sessionRepositoryProvider);
       final session = await repo.getSession(_sessionId);
+      if (!mounted) return;
       state = state.copyWith(
         sessionInfo: session,
-        members:     session.members,
-        isLoading:   false,
+        members: session.members,
+        isLoading: false,
       );
     } catch (e) {
       debugPrint('[Lobby] Failed to load session: $e');
+      if (!mounted) return;
       state = state.copyWith(isLoading: false);
     }
   }
@@ -166,24 +166,35 @@ class LobbyNotifier extends StateNotifier<LobbyState> {
 
   Future<void> promoteToAdmin(String userId) async {
     await _ref.read(sessionRepositoryProvider).updateMemberRole(
-      _sessionId,
-      userId,
-      'admin',
-    );
+          _sessionId,
+          userId,
+          'admin',
+        );
+    if (!mounted) return;
     state = state.copyWith(
       members: state.members.map((m) {
         if (m.userId == userId) {
           return SessionMember(
-            userId:         m.userId,
-            nickname:       m.nickname,
-            avatarUrl:      m.avatarUrl,
-            isHost:         m.isHost,
-            role:           'admin',
+            userId: m.userId,
+            nickname: m.nickname,
+            avatarUrl: m.avatarUrl,
+            isHost: m.isHost,
+            role: 'admin',
             sharingEnabled: m.sharingEnabled,
           );
         }
         return m;
       }).toList(),
+    );
+  }
+
+  Future<void> releaseRealtimeResources({
+    bool notifyServer = true,
+  }) async {
+    await _audio.leaveSession();
+    _socket.leaveSession(
+      sessionId: _sessionId,
+      notifyServer: notifyServer,
     );
   }
 
@@ -202,6 +213,7 @@ class LobbyNotifier extends StateNotifier<LobbyState> {
 // Provider
 // ─────────────────────────────────────────────────────────────────────────────
 
-final lobbyProvider = StateNotifierProvider.family<LobbyNotifier, LobbyState, String>(
+final lobbyProvider =
+    StateNotifierProvider.autoDispose.family<LobbyNotifier, LobbyState, String>(
   (ref, sessionId) => LobbyNotifier(sessionId, ref),
 );
