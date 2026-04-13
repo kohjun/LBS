@@ -31,7 +31,7 @@ await fastify.register(fastifyCookie);
 // 라우트 등록
 fastify.register(authRoutes,     { prefix: '/auth' });
 fastify.register(sessionRoutes,  { prefix: '/sessions' });
-fastify.register(geofenceRoutes, { prefix: '/sessions' });
+fastify.register(geofenceRoutes, { prefix: '/geofences' });
 
 // 헬스체크
 fastify.get('/health', async () => {
