@@ -10,6 +10,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/router/app_router.dart';
+import '../../../core/services/app_initialization_service.dart';
+import '../../../core/services/background_service.dart';
 import '../../../core/services/mediasoup_audio_service.dart';
 import '../../../core/services/socket_service.dart';
 import '../../../core/services/location_service.dart';
@@ -60,13 +62,80 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
   // 위치 업데이트 일괄 처리 (500ms 간격, 50m 이상 이동 시만 반영)
   final Map<String, MemberState> _pendingUpdates = {};
   Timer? _markerFlushTimer;
+  final Stopwatch _startupStopwatch = Stopwatch();
+  bool _backgroundServiceStartRequested = false;
 
   // ★ 추가됨: 지오펜스 상태 관리를 위한 클래스 변수
   final Set<String> _insideGeofences = {}; // 현재 내가 들어가 있는 지오펜스 ID 목록
   List<dynamic> _currentGeofences =
       []; // 현재 세션의 지오펜스 목록 (dynamic은 실제 Geofence 모델로 변경 권장)
 
+  void _logStartupStep(String label) {
+    debugPrint(
+      '[MapInit][$_sessionId] $label in ${_startupStopwatch.elapsedMilliseconds}ms',
+    );
+  }
+
+  Future<void> _bootstrapSession(SharedPreferences prefs) async {
+    await Future.microtask(() {});
+    await _connectRealtime();
+    _logStartupStep('connected realtime services');
+
+    await Future.microtask(() {});
+    await _startGpsTracking();
+    _logStartupStep('started gps tracking');
+
+    await Future.microtask(() {});
+    await _loadInitialMembers();
+    _logStartupStep('loaded initial members');
+
+    unawaited(_prepareBackgroundService(prefs));
+  }
+
+  Future<void> _connectRealtime() async {
+    try {
+      await _socket.connect();
+      if (_socket.isConnected) {
+        state = state.copyWith(isConnected: true, hasEverConnected: true);
+        _socket.joinSession(_sessionId);
+        _socket.requestGameState(_sessionId);
+        unawaited(_audio.ensureJoined(_sessionId));
+      }
+    } catch (e) {
+      debugPrint('[Map] Socket connect failed: $e');
+    }
+  }
+
+  Future<void> _prepareBackgroundService(SharedPreferences prefs) async {
+    if (_backgroundServiceStartRequested) return;
+    _backgroundServiceStartRequested = true;
+
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
+
+    try {
+      await prefs.setString('bg_session_id', _sessionId);
+      await prefs.setString('bg_server_url', kApiBaseUrl);
+
+      final token = await ApiClient().getAccessToken();
+      if (token != null) {
+        await prefs.setString('bg_token', token);
+      }
+
+      await prefs.setBool('bg_active', true);
+      await initializeBackgroundService();
+
+      final bgService = FlutterBackgroundService();
+      await bgService.startService();
+      _logStartupStep('started background service');
+    } catch (e) {
+      debugPrint('[Background] Failed to start background service: $e');
+      _backgroundServiceStartRequested = false;
+    }
+  }
+
   Future<void> _init() async {
+    _startupStopwatch.start();
     // 1. 세션 이름: sessionListProvider 캐시에서 조회
     final cachedSessions = _ref.read(sessionListProvider).valueOrNull ?? [];
     final cached = cachedSessions.where((s) => s.id == _sessionId);
@@ -92,44 +161,16 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
     }
 
     _bindSocketStreams();
+    _logStartupStep('restored cached state');
 
-    // 3. 소켓 연결
-    try {
-      await _socket.connect();
-      if (_socket.isConnected) {
-        state = state.copyWith(isConnected: true, hasEverConnected: true);
-        _socket.joinSession(_sessionId);
-        _socket.requestGameState(_sessionId);
-        unawaited(_audio.ensureJoined(_sessionId));
-      }
-    } catch (e) {
-      debugPrint('[Map] Socket connect failed: $e');
-    }
+    // 3. 소켓 연결 + 백그라운드 서비스는 _bootstrapSession에서 처리
+    unawaited(_bootstrapSession(prefs));
 
     _joinRetryTimer = Timer(const Duration(seconds: 30), () {
       if (mounted && state.members.isEmpty && state.isConnected) {
         _socket.joinSession(_sessionId);
       }
     });
-
-    await _startGpsTracking();
-    await _loadInitialMembers();
-
-    // 6. 백그라운드 서비스용 데이터 저장 및 시작
-    try {
-      await prefs.setString('bg_session_id', _sessionId);
-      await prefs.setString('bg_server_url', kApiBaseUrl);
-      final token = await ApiClient().getAccessToken();
-      if (token != null) {
-        await prefs.setString('bg_token', token);
-      }
-      await prefs.setBool('bg_active', true);
-      final bgService = FlutterBackgroundService();
-      await bgService.startService();
-      debugPrint('[Background] 포그라운드 서비스 시작됨');
-    } catch (e) {
-      debugPrint('[Background] 서비스 시작 실패: $e');
-    }
   }
 
   // ── 소켓 구독 바인딩 ─────────────────────────────────────────────────────
@@ -322,8 +363,8 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
 
   Future<void> _startGpsTracking() async {
     try {
-      await _gps.startTracking();
       _gps.setSessionId(_sessionId);
+      await _gps.startTracking();
       _myPositionSub = _gps.positionStream.listen((pos) {
         state = state.copyWith(myPosition: pos);
 
@@ -597,6 +638,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   static const double _kCollapsedAiChatHeight = 236.0;
 
   NaverMapController? _mapController;
+  bool _mapSdkReady = false;
   bool _followMe = true;
   double _aiChatHeight = _kCollapsedAiChatHeight;
   bool _isLeavingSession = false;
@@ -610,6 +652,28 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   Set<String>? _prevHiddenMembers;
   String? _prevMyUserId;
   Set<String>? _prevEliminatedUserIds;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_ensureMapSdkReady());
+  }
+
+  Future<void> _ensureMapSdkReady() async {
+    try {
+      await AppInitializationService().ensureNaverMapInitialized();
+      if (!mounted) return;
+      setState(() => _mapSdkReady = true);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('지도 초기화 실패: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
 
   double _resolveExpandedAiChatHeight(BuildContext context) {
     final media = MediaQuery.of(context);
@@ -848,29 +912,34 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         body: Stack(
           children: [
             // ── Naver Map ───────────────────────────────────────────────────
-            NaverMap(
-              options: NaverMapViewOptions(
-                initialCameraPosition: NCameraPosition(
-                  target: myPos != null
-                      ? NLatLng(myPos.latitude, myPos.longitude)
-                      : const NLatLng(37.5665, 126.9780),
-                  zoom: 14.0,
+            if (_mapSdkReady)
+              NaverMap(
+                options: NaverMapViewOptions(
+                  initialCameraPosition: NCameraPosition(
+                    target: myPos != null
+                        ? NLatLng(myPos.latitude, myPos.longitude)
+                        : const NLatLng(37.5665, 126.9780),
+                    zoom: 14.0,
+                  ),
+                  locationButtonEnable: false,
+                  zoomGesturesEnable: true,
                 ),
-                locationButtonEnable: false,
-                zoomGesturesEnable: true,
+                onMapReady: (controller) {
+                  _mapController = controller;
+                  if (_cachedMarkers.isNotEmpty) {
+                    _mapController!.addOverlayAll(_cachedMarkers);
+                  }
+                },
+                onCameraChange: (reason, animated) {
+                  if (reason == NCameraUpdateReason.gesture) {
+                    setState(() => _followMe = false);
+                  }
+                },
+              )
+            else
+              const Positioned.fill(
+                child: Center(child: CircularProgressIndicator()),
               ),
-              onMapReady: (controller) {
-                _mapController = controller;
-                if (_cachedMarkers.isNotEmpty) {
-                  _mapController!.addOverlayAll(_cachedMarkers);
-                }
-              },
-              onCameraChange: (reason, animated) {
-                if (reason == NCameraUpdateReason.gesture) {
-                  setState(() => _followMe = false);
-                }
-              },
-            ),
 
             // ── 상단 앱바 ─────────────────────────────────────────────────────
             Positioned(

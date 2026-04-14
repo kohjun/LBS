@@ -170,7 +170,7 @@ class HomeScreen extends ConsumerWidget {
                     maxLength: 30,
                     decoration: const InputDecoration(
                       labelText: '세션 이름',
-                      hintText: '예: 가족 나들이',
+                      hintText: '예: MOYA 세션',
                     ),
                   ),
                   const SizedBox(height: 16),

@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_naver_map/flutter_naver_map.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/services/app_initialization_service.dart';
 import '../data/history_repository.dart';
 import '../../home/data/session_repository.dart';
 import '../../auth/data/auth_repository.dart';
@@ -38,6 +39,7 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen>
 
   List<TrackPoint> _track = [];
   bool _loading = false;
+  bool _mapSdkReady = false;
 
   NaverMapController? _mapCtrl;
 
@@ -58,7 +60,18 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen>
       vsync: this,
       duration: const Duration(milliseconds: 400),
     );
+    unawaited(_ensureMapSdkReady());
     _loadMembers();
+  }
+
+  Future<void> _ensureMapSdkReady() async {
+    try {
+      await AppInitializationService().ensureNaverMapInitialized();
+      if (!mounted) return;
+      setState(() => _mapSdkReady = true);
+    } catch (e) {
+      _showError('지도 초기화 실패: $e');
+    }
   }
 
   @override
@@ -276,23 +289,26 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen>
             flex: 5,
             child: Stack(
               children: [
-                NaverMap(
-                  options: const NaverMapViewOptions(
-                    initialCameraPosition: NCameraPosition(
-                      target: NLatLng(37.5665, 126.9780),
-                      zoom: 14,
+                if (_mapSdkReady)
+                  NaverMap(
+                    options: const NaverMapViewOptions(
+                      initialCameraPosition: NCameraPosition(
+                        target: NLatLng(37.5665, 126.9780),
+                        zoom: 14,
+                      ),
+                      zoomGesturesEnable: true,
+                      locationButtonEnable: false,
                     ),
-                    zoomGesturesEnable: true,
-                    locationButtonEnable: false,
-                  ),
-                  onMapReady: (ctrl) {
-                    _mapCtrl = ctrl;
-                    if (_track.isNotEmpty) {
-                      _updateOverlays();
-                      _fitPolyline();
-                    }
-                  },
-                ),
+                    onMapReady: (ctrl) {
+                      _mapCtrl = ctrl;
+                      if (_track.isNotEmpty) {
+                        _updateOverlays();
+                        _fitPolyline();
+                      }
+                    },
+                  )
+                else
+                  const Center(child: CircularProgressIndicator()),
                 if (_loading)
                   const Center(child: CircularProgressIndicator()),
                 if (!_loading && _track.isEmpty)

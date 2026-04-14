@@ -1,7 +1,10 @@
 // lib/features/auth/data/auth_repository.dart
 
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/services/fcm_service.dart';
 
 // 현재 로그인 사용자 모델
 class AppUser {
@@ -95,7 +98,11 @@ class AuthNotifier extends AsyncNotifier<AppUser?> {
       });
     };
     // 앱 시작 시 저장된 토큰으로 사용자 복원
-    return ref.read(authRepositoryProvider).getMe();
+    final user = await ref.read(authRepositoryProvider).getMe();
+    if (user != null) {
+      unawaited(FcmService().init());
+    }
+    return user;
   }
 
   Future<void> login({required String email, required String password}) async {
@@ -106,6 +113,7 @@ class AuthNotifier extends AsyncNotifier<AppUser?> {
         password: password,
       );
       state = AsyncData(user);
+      unawaited(FcmService().init());
     } catch (e, st) {
       state = AsyncError(e, st);
     }
@@ -131,6 +139,7 @@ class AuthNotifier extends AsyncNotifier<AppUser?> {
   }
 
   Future<void> logout() async {
+    await FcmService().dispose();
     await ref.read(authRepositoryProvider).logout();
     state = const AsyncData(null);
   }

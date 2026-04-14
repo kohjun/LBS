@@ -17,8 +17,15 @@ import 'notification_service.dart';
 
 const notificationChannelId = 'location_tracking_channel';
 const notificationId = 888;
+bool _backgroundServiceInitialized = false;
 
 Future<void> initializeBackgroundService() async {
+  if (_backgroundServiceInitialized) {
+    debugPrint('[Background] Service configuration already initialized');
+    return;
+  }
+
+  final stopwatch = Stopwatch()..start();
   final service = FlutterBackgroundService();
 
   // 안드로이드 알림 채널 설정
@@ -53,6 +60,11 @@ Future<void> initializeBackgroundService() async {
       onForeground: onStart,
       onBackground: onIosBackground,
     ),
+  );
+
+  _backgroundServiceInitialized = true;
+  debugPrint(
+    '[Background] Service configured in ${stopwatch.elapsedMilliseconds}ms',
   );
 }
 

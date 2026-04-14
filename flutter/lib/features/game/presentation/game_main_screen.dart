@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/services/app_initialization_service.dart';
 import '../../../core/services/socket_service.dart';
 import '../../../core/providers/connection_provider.dart'; // ★ 추가된 Provider
 import '../../auth/data/auth_repository.dart';
@@ -1198,6 +1199,7 @@ class _GameMapSheet extends ConsumerStatefulWidget {
 
 class _GameMapSheetState extends ConsumerState<_GameMapSheet> {
   NaverMapController? _mapController;
+  bool _mapSdkReady = false;
   bool _followMe = true;
   bool _isMemberPanelExpanded = false;
   final Map<String, NMarker> _activeMarkers = {};
@@ -1206,6 +1208,28 @@ class _GameMapSheetState extends ConsumerState<_GameMapSheet> {
   Set<String>? _previousHiddenMembers;
   Set<String>? _previousEliminatedUserIds;
   String? _previousUserId;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_ensureMapSdkReady());
+  }
+
+  Future<void> _ensureMapSdkReady() async {
+    try {
+      await AppInitializationService().ensureNaverMapInitialized();
+      if (!mounted) return;
+      setState(() => _mapSdkReady = true);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('지도 초기화 실패: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1257,30 +1281,34 @@ class _GameMapSheetState extends ConsumerState<_GameMapSheet> {
           color: Colors.white,
           child: Stack(
             children: [
-              NaverMap(
-                options: NaverMapViewOptions(
-                  initialCameraPosition: NCameraPosition(
-                      target: myPosition != null
-                          ? NLatLng(myPosition.latitude, myPosition.longitude)
-                          : const NLatLng(37.5665, 126.9780),
-                      zoom: 14),
-                  locationButtonEnable: false,
-                  zoomGesturesEnable: true,
-                ),
-                onMapReady: (controller) {
-                  _mapController = controller;
-                  _syncMarkers(
-                      mapState.members,
-                      myUserId,
-                      mapState.sharingEnabled,
-                      mapState.hiddenMembers,
-                      mapState.eliminatedUserIds);
-                },
-                onCameraChange: (reason, _) {
-                  if (reason == NCameraUpdateReason.gesture)
-                    setState(() => _followMe = false);
-                },
-              ),
+              if (_mapSdkReady)
+                NaverMap(
+                  options: NaverMapViewOptions(
+                    initialCameraPosition: NCameraPosition(
+                        target: myPosition != null
+                            ? NLatLng(myPosition.latitude, myPosition.longitude)
+                            : const NLatLng(37.5665, 126.9780),
+                        zoom: 14),
+                    locationButtonEnable: false,
+                    zoomGesturesEnable: true,
+                  ),
+                  onMapReady: (controller) {
+                    _mapController = controller;
+                    _syncMarkers(
+                        mapState.members,
+                        myUserId,
+                        mapState.sharingEnabled,
+                        mapState.hiddenMembers,
+                        mapState.eliminatedUserIds);
+                  },
+                  onCameraChange: (reason, _) {
+                    if (reason == NCameraUpdateReason.gesture) {
+                      setState(() => _followMe = false);
+                    }
+                  },
+                )
+              else
+                const Center(child: CircularProgressIndicator()),
               Positioned(
                 top: 0,
                 left: 0,
@@ -1318,11 +1346,12 @@ class _GameMapSheetState extends ConsumerState<_GameMapSheet> {
                 bottomOffset: floatingControlsBottom,
                 onFollowPressed: () {
                   setState(() => _followMe = true);
-                  if (myPosition != null)
+                  if (myPosition != null) {
                     _mapController?.updateCamera(NCameraUpdate.scrollAndZoomTo(
                         target:
                             NLatLng(myPosition.latitude, myPosition.longitude))
                       ..setAnimation(animation: NCameraAnimation.easing));
+                  }
                 },
                 onFitPressed: () =>
                     _fitAllMembers(mapState.members, myPosition),

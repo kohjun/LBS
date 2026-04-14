@@ -2,12 +2,14 @@
 
 import 'dart:convert'; // ★ 추가됨: JSON 인코딩용
 import 'dart:math' as math;
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_naver_map/flutter_naver_map.dart';
 import 'package:shared_preferences/shared_preferences.dart'; // ★ 추가됨: 로컬 저장소용
 
 import '../data/geofence_repository.dart';
+import '../../../core/services/app_initialization_service.dart';
 import '../../auth/data/auth_repository.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -25,6 +27,7 @@ class _GeofenceScreenState extends ConsumerState<GeofenceScreen> {
   NaverMapController? _mapCtrl;
   List<Geofence> _geofences = [];
   bool _loading = false;
+  bool _mapSdkReady = false;
 
   // ── 추가 모드 ──────────────────────────────────────────────────────────────
   bool _addMode = false;
@@ -32,7 +35,18 @@ class _GeofenceScreenState extends ConsumerState<GeofenceScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(_ensureMapSdkReady());
     _loadGeofences();
+  }
+
+  Future<void> _ensureMapSdkReady() async {
+    try {
+      await AppInitializationService().ensureNaverMapInitialized();
+      if (!mounted) return;
+      setState(() => _mapSdkReady = true);
+    } catch (e) {
+      _showError('지도 초기화 실패: $e');
+    }
   }
 
   // ── 백그라운드 서비스용 지오펜스 동기화 함수 ────────────────────────────────
@@ -365,25 +379,28 @@ class _GeofenceScreenState extends ConsumerState<GeofenceScreen> {
             child: Stack(
               alignment: Alignment.center,
               children: [
-                NaverMap(
-                  options: const NaverMapViewOptions(
-                    initialCameraPosition: NCameraPosition(
-                      target: NLatLng(37.5665, 126.9780),
-                      zoom: 14.0,
+                if (_mapSdkReady)
+                  NaverMap(
+                    options: const NaverMapViewOptions(
+                      initialCameraPosition: NCameraPosition(
+                        target: NLatLng(37.5665, 126.9780),
+                        zoom: 14.0,
+                      ),
+                      zoomGesturesEnable: true,
+                      locationButtonEnable: true,
                     ),
-                    zoomGesturesEnable: true,
-                    locationButtonEnable: true,
-                  ),
-                  onMapReady: (ctrl) {
-                    _mapCtrl = ctrl;
-                    _updateMapOverlays();
-                  },
-                  onMapTapped: (point, latLng) {
-                    if (_addMode) {
-                      _onMapTap(latLng);
-                    }
-                  },
-                ),
+                    onMapReady: (ctrl) {
+                      _mapCtrl = ctrl;
+                      _updateMapOverlays();
+                    },
+                    onMapTapped: (point, latLng) {
+                      if (_addMode) {
+                        _onMapTap(latLng);
+                      }
+                    },
+                  )
+                else
+                  const Center(child: CircularProgressIndicator()),
 
                 // ── 추가 모드 십자선 ────────────────────────────────────
                 if (_addMode) ...[
