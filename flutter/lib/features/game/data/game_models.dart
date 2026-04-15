@@ -250,3 +250,59 @@ class AmongUsGameState {
         totalTaskProgress:   totalTaskProgress   ?? this.totalTaskProgress,
       );
 }
+
+// 미션의 종류: QR 코드 스캔, 특정 위치(지오펜스) 도착
+enum MissionType { qr, location }
+
+// 미션의 진행 상태: 잠김, 수행 가능, 완료됨
+enum MissionStatus { locked, ready, completed }
+
+// 미션 데이터 모델
+class Mission {
+  final String id;
+  final String title;
+  final String description;
+  final MissionType type;
+  MissionStatus status;
+  
+  // 위치 기반 미션일 경우 필요한 위도/경도 (QR 미션이면 null)
+  final double? targetLatitude;
+  final double? targetLongitude;
+  
+  // 위치 기반 미션에서 활성화되는 반경 (미터 단위, 기본값 10m)
+  final double radius;
+
+  Mission({
+    required this.id,
+    required this.title,
+    required this.description,
+    required this.type,
+    this.status = MissionStatus.locked,
+    this.targetLatitude,
+    this.targetLongitude,
+    this.radius = 10.0,
+  });
+
+  // 상태 업데이트를 위한 copyWith 메서드
+  Mission copyWith({
+    String? id,
+    String? title,
+    String? description,
+    MissionType? type,
+    MissionStatus? status,
+    double? targetLatitude,
+    double? targetLongitude,
+    double? radius,
+  }) {
+    return Mission(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      description: description ?? this.description,
+      type: type ?? this.type,
+      status: status ?? this.status,
+      targetLatitude: targetLatitude ?? this.targetLatitude,
+      targetLongitude: targetLongitude ?? this.targetLongitude,
+      radius: radius ?? this.radius,
+    );
+  }
+}
