@@ -25,9 +25,116 @@ class _GameMeetingScreenState extends ConsumerState<GameMeetingScreen> {
   bool _hasVoted    = false;
   bool _hasPreVoted = false;
 
+  // meeting_ended 팝업을 한 번만 표시하기 위한 플래그
+  bool _hasSeenActiveMeeting = false;
+  bool _endHandled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final phase = ref.read(gameProvider(widget.sessionId)).meetingPhase;
+    if (phase != 'none') _hasSeenActiveMeeting = true;
+  }
+
+  void _handleMeetingEnded() {
+    if (_endHandled || !mounted) return;
+    _endHandled = true;
+
+    final result = ref.read(gameProvider(widget.sessionId)).voteResult;
+    final ejectedId = result?.ejectedId;
+    final ejectedNickname = ejectedId != null
+        ? (widget.memberNames[ejectedId] ?? ejectedId)
+        : null;
+
+    final message = ejectedNickname != null
+        ? '$ejectedNickname이(가) 추방되었습니다'
+        : '아무도 추방되지 않았습니다';
+
+    // widget이 unmount되어도 pop을 실행할 수 있도록 미리 캡처
+    final navigator = Navigator.of(context);
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => Dialog(
+        backgroundColor: Colors.transparent,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
+          decoration: BoxDecoration(
+            color: const Color(0xFF16213e),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: ejectedNickname != null
+                  ? const Color(0xFFe94560)
+                  : Colors.white24,
+              width: 1.5,
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              if (ejectedId != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  result?.wasImpostor == true
+                      ? '정체: 임포스터'
+                      : '정체: 크루원',
+                  style: TextStyle(
+                    color: result?.wasImpostor == true
+                        ? Colors.red.shade300
+                        : Colors.blue.shade300,
+                    fontSize: 15,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 20),
+              const LinearProgressIndicator(
+                backgroundColor: Color(0xFF0f3460),
+                color: Color(0xFFe94560),
+                minHeight: 3,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                '3초 후 게임으로 돌아갑니다',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    Future.delayed(const Duration(seconds: 3), () {
+      // mounted 와 무관하게 캡처한 navigator로 pop (widget unmount 후에도 동작)
+      if (navigator.canPop()) navigator.pop(); // 다이얼로그
+      if (navigator.canPop()) navigator.pop(); // 회의 화면
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final gameState = ref.watch(gameProvider(widget.sessionId));
+
+    // meeting_ended 감지: 'none'이 되면 팝업 표시
+    ref.listen(
+      gameProvider(widget.sessionId).select((s) => s.meetingPhase),
+      (prev, next) {
+        if (next != 'none') {
+          _hasSeenActiveMeeting = true;
+        } else if (_hasSeenActiveMeeting) {
+          _handleMeetingEnded();
+        }
+      },
+    );
 
     return Scaffold(
       backgroundColor: const Color(0xFF1a1a2e),
@@ -49,12 +156,13 @@ class _GameMeetingScreenState extends ConsumerState<GameMeetingScreen> {
 
   // ── 상단 헤더 ──────────────────────────────────────────────────────────────
   Widget _buildHeader(AmongUsGameState gameState) {
-    final isVoting    = gameState.meetingPhase == 'voting';
-    final isDiscuss   = gameState.meetingPhase == 'discussion';
-    final remaining   = gameState.meetingRemaining;
-    final mins        = remaining ~/ 60;
-    final secs        = remaining % 60;
-    final timeStr     = '${mins.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
+    final isVoting  = gameState.meetingPhase == 'voting';
+    final isDiscuss = gameState.meetingPhase == 'discussion';
+    final remaining = gameState.meetingRemaining;
+    final mins      = remaining ~/ 60;
+    final secs      = remaining % 60;
+    final timeStr   =
+        '${mins.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -73,9 +181,12 @@ class _GameMeetingScreenState extends ConsumerState<GameMeetingScreen> {
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
-                  color: remaining <= 10 ? Colors.red : const Color(0xFF0f3460),
+                  color: remaining <= 10
+                      ? Colors.red
+                      : const Color(0xFF0f3460),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
@@ -108,8 +219,8 @@ class _GameMeetingScreenState extends ConsumerState<GameMeetingScreen> {
 
   // ── 플레이어 목록 ────────────────────────────────────────────────────────────
   Widget _buildPlayerList(AmongUsGameState gameState) {
-    final isVoting   = gameState.meetingPhase == 'voting';
-    final canSelect  = !isVoting ? !_hasPreVoted : !_hasVoted;
+    final isVoting  = gameState.meetingPhase == 'voting';
+    final canSelect = !isVoting ? !_hasPreVoted : !_hasVoted;
 
     return ListView.builder(
       padding: const EdgeInsets.all(12),
@@ -141,9 +252,8 @@ class _GameMeetingScreenState extends ConsumerState<GameMeetingScreen> {
               children: [
                 CircleAvatar(
                   radius: 22,
-                  backgroundColor: isMe
-                      ? Colors.grey
-                      : const Color(0xFF0f3460),
+                  backgroundColor:
+                      isMe ? Colors.grey : const Color(0xFF0f3460),
                   child: Text(
                     nickname.isNotEmpty ? nickname[0].toUpperCase() : '?',
                     style: const TextStyle(
@@ -165,7 +275,22 @@ class _GameMeetingScreenState extends ConsumerState<GameMeetingScreen> {
                   ),
                 ),
                 if (selected)
-                  const Icon(Icons.check_circle, color: Color(0xFFe94560)),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFe94560),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text(
+                      '선택됨',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -176,8 +301,8 @@ class _GameMeetingScreenState extends ConsumerState<GameMeetingScreen> {
 
   // ── 하단 액션 ──────────────────────────────────────────────────────────────
   Widget _buildBottomActions(AmongUsGameState gameState) {
-    final isVoting   = gameState.meetingPhase == 'voting';
-    final isDiscuss  = gameState.meetingPhase == 'discussion';
+    final isVoting  = gameState.meetingPhase == 'voting';
+    final isDiscuss = gameState.meetingPhase == 'discussion';
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -187,7 +312,7 @@ class _GameMeetingScreenState extends ConsumerState<GameMeetingScreen> {
         children: [
           if (isDiscuss) ...[
             const Text(
-              '💬 토론 중 - 사전 투표 가능합니다',
+              '토론 중 - 사전 투표가 가능합니다',
               style: TextStyle(color: Colors.white70, fontSize: 13),
             ),
             const SizedBox(height: 4),
@@ -200,41 +325,70 @@ class _GameMeetingScreenState extends ConsumerState<GameMeetingScreen> {
           Row(
             children: [
               Expanded(
-                child: OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                    side: const BorderSide(color: Colors.white54),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                  onPressed: (isVoting && _hasVoted) || (isDiscuss && _hasPreVoted)
+                child: GestureDetector(
+                  onTap: (isVoting && _hasVoted) || (isDiscuss && _hasPreVoted)
                       ? null
                       : () {
                           setState(() => _selectedTarget = 'skip');
                           _handleVote();
                         },
-                  child: const Text('기권', style: TextStyle(color: Colors.white70)),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: (isVoting && _hasVoted) ||
+                                (isDiscuss && _hasPreVoted)
+                            ? Colors.white24
+                            : Colors.white54,
+                      ),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Center(
+                      child: Text(
+                        '건너뛰기',
+                        style: TextStyle(
+                          color: (isVoting && _hasVoted) ||
+                                  (isDiscuss && _hasPreVoted)
+                              ? Colors.white24
+                              : Colors.white70,
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 flex: 2,
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isVoting
-                        ? (_hasVoted ? Colors.grey : const Color(0xFFe94560))
-                        : (_hasPreVoted ? Colors.grey : const Color(0xFF0f3460)),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                  onPressed: (isVoting && _hasVoted) ||
+                child: GestureDetector(
+                  onTap: (isVoting && _hasVoted) ||
                           (isDiscuss && _hasPreVoted) ||
                           _selectedTarget == null
                       ? null
                       : _handleVote,
-                  child: Text(
-                    isVoting
-                        ? (_hasVoted ? '투표 완료 ✓' : '투표 확정')
-                        : (_hasPreVoted ? '사전 투표 완료 ✓' : '사전투표 확정'),
-                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    decoration: BoxDecoration(
+                      color: isVoting
+                          ? (_hasVoted
+                              ? Colors.grey
+                              : const Color(0xFFe94560))
+                          : (_hasPreVoted
+                              ? Colors.grey
+                              : const Color(0xFF0f3460)),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Center(
+                      child: Text(
+                        isVoting
+                            ? (_hasVoted ? '투표 완료' : '투표 확정')
+                            : (_hasPreVoted ? '사전 투표 완료' : '사전투표 확정'),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -274,7 +428,8 @@ class _GameMeetingScreenState extends ConsumerState<GameMeetingScreen> {
 
     String ejectedNickname = '알 수 없음';
     if (result?.ejectedId != null) {
-      ejectedNickname = widget.memberNames[result!.ejectedId!] ?? result.ejectedId!;
+      ejectedNickname =
+          widget.memberNames[result!.ejectedId!] ?? result.ejectedId!;
     }
 
     return Center(
@@ -312,7 +467,7 @@ class _GameMeetingScreenState extends ConsumerState<GameMeetingScreen> {
               ),
               const SizedBox(height: 12),
               Text(
-                result.wasImpostor == true ? '임포스터였습니다 😈' : '크루원이었습니다 😢',
+                result.wasImpostor == true ? '임포스터였습니다' : '크루원이었습니다',
                 style: TextStyle(
                   color: result.wasImpostor == true
                       ? Colors.red.shade300

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import '../data/game_models.dart';
 import '../providers/game_provider.dart';
 import 'minigames/minigame_wrapper_screen.dart';
 
@@ -59,8 +60,7 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
       MaterialPageRoute(
         builder: (_) => MinigameWrapperScreen(
           sessionId: widget.sessionId,
-          missionId: matched.id,
-          missionTitle: matched.title,
+          mission: matched,
         ),
       ),
     );

@@ -51,7 +51,7 @@ dependencies:
   battery_plus: ^6.0.1
 
   # 미니게임 (Flame 엔진)
-  flame: ^1.18.0
+  flame: ^1.37.0
 
   # QR 스캔
   mobile_scanner: ^5.2.3

@@ -15,16 +15,20 @@ class Mission {
   final double? targetLatitude;
   final double? targetLongitude;
   final double radius;
+  final String minigameId;
+  final bool isSabotaged;
 
   const Mission({
     required this.id,
     required this.title,
     required this.description,
     required this.type,
+    required this.minigameId,
     this.status = MissionStatus.locked,
     this.targetLatitude,
     this.targetLongitude,
     this.radius = 15.0,
+    this.isSabotaged = false,
   });
 
   Mission copyWith({
@@ -36,6 +40,8 @@ class Mission {
     double? targetLatitude,
     double? targetLongitude,
     double? radius,
+    String? minigameId,
+    bool? isSabotaged,
   }) =>
       Mission(
         id: id ?? this.id,
@@ -46,6 +52,8 @@ class Mission {
         targetLatitude: targetLatitude ?? this.targetLatitude,
         targetLongitude: targetLongitude ?? this.targetLongitude,
         radius: radius ?? this.radius,
+        minigameId: minigameId ?? this.minigameId,
+        isSabotaged: isSabotaged ?? this.isSabotaged,
       );
 }
 
@@ -183,6 +191,12 @@ class AmongUsGameState {
   /// 전체 태스크 진행도 (0.0 ~ 1.0). 서버 task_progress 이벤트로 갱신됩니다.
   final double totalTaskProgress;
 
+  /// 회의 시작 이벤트를 수신했을 때 true → 상위 위젯이 GameMeetingScreen으로 이동 후 false로 리셋.
+  final bool shouldNavigateToMeeting;
+
+  /// 회의 쿨타임 중 여부 (버튼 비활성화 표시용).
+  final bool isMeetingCoolingDown;
+
   const AmongUsGameState({
     this.isStarted        = false,
     this.myRole,
@@ -206,6 +220,8 @@ class AmongUsGameState {
     this.nearbyMissionIds = const [],
     this.myMissions = const [],
     this.totalTaskProgress = 0.0,
+    this.shouldNavigateToMeeting = false,
+    this.isMeetingCoolingDown = false,
   });
 
   AmongUsGameState copyWith({
@@ -227,82 +243,33 @@ class AmongUsGameState {
     List<String>? nearbyMissionIds,
     List<Mission>? myMissions,
     double? totalTaskProgress,
+    bool? shouldNavigateToMeeting,
+    bool? isMeetingCoolingDown,
   }) =>
       AmongUsGameState(
-        isStarted:           isStarted           ?? this.isStarted,
-        myRole:              myRole              ?? this.myRole,
-        missions:            missions            ?? this.missions,
-        missionProgress:     missionProgress     ?? this.missionProgress,
-        chatLogs:            chatLogs            ?? this.chatLogs,
-        meetingPhase:        meetingPhase        ?? this.meetingPhase,
-        meetingRemaining:    meetingRemaining    ?? this.meetingRemaining,
-        totalVoted:          totalVoted          ?? this.totalVoted,
-        totalPlayers:        totalPlayers        ?? this.totalPlayers,
-        voteResult:          voteResult          ?? this.voteResult,
-        gameOverWinner:      gameOverWinner      ?? this.gameOverWinner,
-        isAlive:             isAlive             ?? this.isAlive,
-        preVoteCount:        preVoteCount        ?? this.preVoteCount,
+        isStarted:              isStarted              ?? this.isStarted,
+        myRole:                 myRole                 ?? this.myRole,
+        missions:               missions               ?? this.missions,
+        missionProgress:        missionProgress        ?? this.missionProgress,
+        chatLogs:               chatLogs               ?? this.chatLogs,
+        meetingPhase:           meetingPhase           ?? this.meetingPhase,
+        meetingRemaining:       meetingRemaining       ?? this.meetingRemaining,
+        totalVoted:             totalVoted             ?? this.totalVoted,
+        totalPlayers:           totalPlayers           ?? this.totalPlayers,
+        voteResult:             voteResult             ?? this.voteResult,
+        gameOverWinner:         gameOverWinner         ?? this.gameOverWinner,
+        isAlive:                isAlive                ?? this.isAlive,
+        preVoteCount:           preVoteCount           ?? this.preVoteCount,
         shouldNavigateToRole:
             shouldNavigateToRole ?? this.shouldNavigateToRole,
-        playableArea:        playableArea        ?? this.playableArea,
-        nearbyMissionIds:    nearbyMissionIds    ?? this.nearbyMissionIds,
-        myMissions:          myMissions          ?? this.myMissions,
-        totalTaskProgress:   totalTaskProgress   ?? this.totalTaskProgress,
+        playableArea:           playableArea           ?? this.playableArea,
+        nearbyMissionIds:       nearbyMissionIds       ?? this.nearbyMissionIds,
+        myMissions:             myMissions             ?? this.myMissions,
+        totalTaskProgress:      totalTaskProgress      ?? this.totalTaskProgress,
+        shouldNavigateToMeeting:
+            shouldNavigateToMeeting ?? this.shouldNavigateToMeeting,
+        isMeetingCoolingDown:
+            isMeetingCoolingDown ?? this.isMeetingCoolingDown,
       );
 }
 
-// 미션의 종류: QR 코드 스캔, 특정 위치(지오펜스) 도착
-enum MissionType { qr, location }
-
-// 미션의 진행 상태: 잠김, 수행 가능, 완료됨
-enum MissionStatus { locked, ready, completed }
-
-// 미션 데이터 모델
-class Mission {
-  final String id;
-  final String title;
-  final String description;
-  final MissionType type;
-  MissionStatus status;
-  
-  // 위치 기반 미션일 경우 필요한 위도/경도 (QR 미션이면 null)
-  final double? targetLatitude;
-  final double? targetLongitude;
-  
-  // 위치 기반 미션에서 활성화되는 반경 (미터 단위, 기본값 10m)
-  final double radius;
-
-  Mission({
-    required this.id,
-    required this.title,
-    required this.description,
-    required this.type,
-    this.status = MissionStatus.locked,
-    this.targetLatitude,
-    this.targetLongitude,
-    this.radius = 10.0,
-  });
-
-  // 상태 업데이트를 위한 copyWith 메서드
-  Mission copyWith({
-    String? id,
-    String? title,
-    String? description,
-    MissionType? type,
-    MissionStatus? status,
-    double? targetLatitude,
-    double? targetLongitude,
-    double? radius,
-  }) {
-    return Mission(
-      id: id ?? this.id,
-      title: title ?? this.title,
-      description: description ?? this.description,
-      type: type ?? this.type,
-      status: status ?? this.status,
-      targetLatitude: targetLatitude ?? this.targetLatitude,
-      targetLongitude: targetLongitude ?? this.targetLongitude,
-      radius: radius ?? this.radius,
-    );
-  }
-}

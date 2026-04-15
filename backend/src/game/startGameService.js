@@ -133,6 +133,14 @@ export const startGameForSession = async ({
 
   await MissionSystem.assignMissions(session, aliveMembers);
 
+  // 각 플레이어에게 자신의 미션 목록 전송
+  for (const member of aliveMembers) {
+    const missions = await MissionSystem.getMissions(sessionId, member.user_id);
+    if (missions && missions.length > 0) {
+      io.to(`user:${member.user_id}`).emit('game:missions_assigned', { missions });
+    }
+  }
+
   return {
     session,
     aliveMembers,

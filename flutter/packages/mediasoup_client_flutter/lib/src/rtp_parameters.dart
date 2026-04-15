@@ -470,8 +470,9 @@ class RtpEncodingParameters extends RTCRtpEncoding {
       if (dtx != null) 'dtx': dtx,
       if (scalabilityMode != null) 'scalabilityMode': scalabilityMode,
       if (adaptivePtime != null) 'adaptivePtime': adaptivePtime,
-      if (priority != null) 'priority': priority,
-      if (networkPriority != null) 'networkPriority': networkPriority,
+      'priority': priority.toString().split('.').last,
+      if (networkPriority != null)
+        'networkPriority': networkPriority!.toString().split('.').last,
     };
   }
 

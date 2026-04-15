@@ -409,6 +409,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.1.1"
+  flame:
+    dependency: "direct main"
+    description:
+      name: flame
+      sha256: b9e65f6d7d06a301d6ea3cde03731cad3cdc255d56e0fb53c56c1e7806aaaf6a
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.37.0"
   flutter:
     dependency: "direct main"
     description: flutter
@@ -854,6 +862,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.0.0"
+  mobile_scanner:
+    dependency: "direct main"
+    description:
+      name: mobile_scanner
+      sha256: d234581c090526676fd8fab4ada92f35c6746e3fb4f05a399665d75a399fb760
+      url: "https://pub.dev"
+    source: hosted
+    version: "5.2.3"
   native_toolchain_c:
     dependency: transitive
     description:
@@ -870,6 +886,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "9.3.0"
+  ordered_set:
+    dependency: transitive
+    description:
+      name: ordered_set
+      sha256: d6c1d053a533e84931a388cbf03f1ad21a0543bf06c7a281859d3ffacd8e15f2
+      url: "https://pub.dev"
+    source: hosted
+    version: "8.0.0"
   package_config:
     dependency: transitive
     description:
@@ -1460,5 +1484,5 @@ packages:
     source: hosted
     version: "3.1.3"
 sdks:
-  dart: ">=3.10.3 <4.0.0"
-  flutter: ">=3.38.4"
+  dart: ">=3.11.0 <4.0.0"
+  flutter: ">=3.41.0"

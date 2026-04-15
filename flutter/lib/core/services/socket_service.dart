@@ -359,7 +359,13 @@ class SocketService {
       ..on(gameMissionProgress,
           (data) => _emitGameEvent(gameMissionProgress, data))
       ..on(gameTaskProgress,
-          (data) => _emitGameEvent(gameTaskProgress, data));
+          (data) => _emitGameEvent(gameTaskProgress, data))
+      ..on(gameSabotageActive,
+          (data) => _emitGameEvent(gameSabotageActive, data))
+      ..on(gameSabotageFixed,
+          (data) => _emitGameEvent(gameSabotageFixed, data))
+      ..on(gameMissionsAssigned,
+          (data) => _emitGameEvent(gameMissionsAssigned, data));
   }
 
   // ... (아래 joinSession, sendLocation 등 나머지 코드는 기존과 완벽히 동일하므로 생략하지 않고 그대로 유지하세요) ...
@@ -653,6 +659,9 @@ class SocketService {
   static const String gameMissionProgress = 'game:mission_progress';
   static const String gameTaskProgress = 'task_progress';
   static const String gameOver = 'game:over';
+  static const String gameSabotageActive   = 'game:sabotage_active';
+  static const String gameSabotageFixed    = 'game:sabotage_fixed';
+  static const String gameMissionsAssigned = 'game:missions_assigned';
 
   // ─────────────────────────────────────────────────────────────────────────
   // 게임 액션 메서드
@@ -695,6 +704,18 @@ class SocketService {
 
   void sendMissionComplete(String sessionId, String missionId) {
     _socket?.emit('game:mission_complete',
+        {'sessionId': sessionId, 'missionId': missionId});
+  }
+
+  void sendTriggerSabotage(String sessionId, String missionId) {
+    if (!_isConnected) return;
+    _socket?.emit('game:trigger_sabotage',
+        {'sessionId': sessionId, 'missionId': missionId});
+  }
+
+  void sendFixSabotage(String sessionId, String missionId) {
+    if (!_isConnected) return;
+    _socket?.emit('game:fix_sabotage',
         {'sessionId': sessionId, 'missionId': missionId});
   }
 

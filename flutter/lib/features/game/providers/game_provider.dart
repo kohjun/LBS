@@ -26,6 +26,7 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
   final _socket = SocketService();
   final List<StreamSubscription> _subs = [];
   int _logIdCounter = 0;
+  Timer? _meetingCooldownTimer;
 
   // ── [Stage 4] 위치 기반 미션 활성화 ─────────────────────────────────────────
   StreamSubscription<Position>? _missionLocationSub;
@@ -143,6 +144,8 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
           totalVoted: 0,
           preVoteCount: 0,
           voteResult: null,
+          shouldNavigateToMeeting: true,
+          isMeetingCoolingDown: false,
         );
       }),
     );
@@ -184,8 +187,41 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
     }));
 
     _subs.add(_socket.onGameEvent(SocketService.gameMeetingEnded).listen((_) {
-      state = state.copyWith(meetingPhase: 'none');
+      state = state.copyWith(
+        meetingPhase: 'none',
+        isMeetingCoolingDown: true,
+      );
+      // 30초 후 쿨타임 해제
+      _meetingCooldownTimer?.cancel();
+      _meetingCooldownTimer = Timer(const Duration(seconds: 30), () {
+        state = state.copyWith(isMeetingCoolingDown: false);
+      });
     }));
+
+    // ── 사보타지 이벤트 ───────────────────────────────────────────────────
+    _subs.add(
+      _socket.onGameEvent(SocketService.gameSabotageActive).listen((data) {
+        final missionId = data['missionId'] as String?;
+        if (missionId == null) return;
+        final updated = state.myMissions.map((m) {
+          if (m.id == missionId) return m.copyWith(isSabotaged: true);
+          return m;
+        }).toList();
+        state = state.copyWith(myMissions: updated);
+      }),
+    );
+
+    _subs.add(
+      _socket.onGameEvent(SocketService.gameSabotageFixed).listen((data) {
+        final missionId = data['missionId'] as String?;
+        if (missionId == null) return;
+        final updated = state.myMissions.map((m) {
+          if (m.id == missionId) return m.copyWith(isSabotaged: false);
+          return m;
+        }).toList();
+        state = state.copyWith(myMissions: updated);
+      }),
+    );
 
     _subs.add(_socket.onGameEvent(SocketService.gameAiMessage).listen((data) {
       final log = ChatLog(
@@ -283,6 +319,46 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
     _subs.add(_socket.onGameEvent(SocketService.gameKillConfirmed).listen((_) {
       // Reserved for local self-state updates when needed.
     }));
+
+    // 게임 시작 시 서버에서 미션 목록 수신
+    _subs.add(_socket.onGameEvent(SocketService.gameMissionsAssigned).listen((data) {
+      final rawList = data['missions'] as List? ?? [];
+      final gameMissions = rawList
+          .whereType<Map>()
+          .map((m) => GameMission.fromMap(Map<String, dynamic>.from(m)))
+          .toList();
+
+      // GameMission → Mission 변환 (미니게임 실행용)
+      final myMissions = gameMissions.map((gm) {
+        final missionType =
+            gm.hasLocation ? MissionType.location : MissionType.qr;
+        return Mission(
+          id: gm.id,
+          title: gm.title,
+          description: gm.isFake ? '[임포스터 가짜 미션] ${gm.title}' : gm.title,
+          type: missionType,
+          status: MissionStatus.locked,
+          minigameId: _resolveMiniGameId(gm.title),
+          targetLatitude: gm.lat,
+          targetLongitude: gm.lng,
+          radius: 15.0,
+        );
+      }).toList();
+
+      state = state.copyWith(missions: gameMissions, myMissions: myMissions);
+
+      final hasLocatedMission =
+          gameMissions.any((m) => m.hasLocation && !m.isCompleted);
+      if (hasLocatedMission) _startMissionLocationTracking();
+    }));
+  }
+
+  /// 미션 제목으로 적절한 미니게임 ID를 반환합니다.
+  static String _resolveMiniGameId(String title) {
+    if (title.contains('전선') || title.contains('수리')) return 'wire_fix';
+    if (title.contains('데이터') || title.contains('업로드')) return 'card_swipe';
+    if (title.contains('카드') || title.contains('스와이프')) return 'card_swipe';
+    return 'card_swipe'; // 기본 미니게임
   }
 
   void startGame() => _socket.startGame(_sessionId);
@@ -311,13 +387,15 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
         description: 'QR 코드를 스캔하여 전선 수리 미니게임을 시작하세요.',
         type: MissionType.qr,
         status: MissionStatus.locked,
+        minigameId: 'wire_fix',
       ),
-      Mission(
+      const Mission(
         id: 'test_loc_01',
         title: '데이터 업로드',
         description: '지정된 구역으로 이동하여 데이터를 업로드하세요.',
         type: MissionType.location,
         status: MissionStatus.locked,
+        minigameId: 'card_swipe',
         // 테스트 좌표 – 실제 배포 시 서버에서 수신한 값으로 대체하세요.
         targetLatitude: 37.5665,
         targetLongitude: 126.9780,
@@ -367,6 +445,32 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
     _socket.sendMissionComplete(_sessionId, missionId);
   }
 
+  /// 임포스터가 특정 미션에 사보타지를 발동합니다.
+  void triggerSabotage(String missionId) {
+    _socket.sendTriggerSabotage(_sessionId, missionId);
+  }
+
+  /// 크루원이 사보타지 수리 미니게임을 클리어하면 호출됩니다.
+  void fixSabotage(String missionId) {
+    final updated = state.myMissions.map((m) {
+      if (m.id == missionId) return m.copyWith(isSabotaged: false);
+      return m;
+    }).toList();
+    state = state.copyWith(myMissions: updated);
+    _socket.sendFixSabotage(_sessionId, missionId);
+  }
+
+  /// GameMeetingScreen 이동 후 호출하여 플래그를 리셋합니다.
+  void resetMeetingNavigation() {
+    state = state.copyWith(shouldNavigateToMeeting: false);
+  }
+
+  /// 긴급 회의를 소집합니다.
+  void callMeeting([Function(Map)? callback]) {
+    state = state.copyWith(isMeetingCoolingDown: true);
+    _socket.sendEmergencyMeeting(_sessionId, callback);
+  }
+
   /// 호스트가 설정한 플레이 가능 영역 폴리곤을 상태에 저장합니다.
   /// null을 전달하면 이탈 경고 판정이 비활성화됩니다.
   /// 유효한 폴리곤이 전달되면 위치 기반 미션 활성화 GPS 추적도 함께 시작합니다.
@@ -407,6 +511,7 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
   void dispose() {
     // [Task 2] Provider 해제 시 WakeLock 반드시 해제 (메모리 누수 방지)
     WakelockPlus.disable();
+    _meetingCooldownTimer?.cancel();
     for (final sub in _subs) {
       sub.cancel();
     }

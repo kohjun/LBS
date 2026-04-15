@@ -65,14 +65,20 @@ export const EVENTS = {
   ERROR:              'error',
 
   // Amongus Client → Server
-  GAME_KILL:          'game:kill',
-  GAME_REPORT:        'game:report',
-  GAME_EMERGENCY:     'game:emergency',
-  GAME_VOTE:          'game:vote',
-  GAME_MISSION_DONE:  'game:mission_complete',
-  GAME_AI_ASK:        'game:ai_ask',
+  GAME_KILL:             'game:kill',
+  GAME_REPORT:           'game:report',
+  GAME_EMERGENCY:        'game:emergency',
+  GAME_VOTE:             'game:vote',
+  GAME_MISSION_DONE:     'game:mission_complete',
+  GAME_AI_ASK:           'game:ai_ask',
+  GAME_TRIGGER_SABOTAGE: 'game:trigger_sabotage',
+  GAME_FIX_SABOTAGE:     'game:fix_sabotage',
+  CALL_MEETING:          'call_meeting',
+  SUBMIT_VOTE:           'submit_vote',
 
   // Amongus Server → Client
+  GAME_SABOTAGE_ACTIVE:    'game:sabotage_active',
+  GAME_SABOTAGE_FIXED:     'game:sabotage_fixed',
   GAME_STARTED:            'game:started',
   GAME_ROLE_ASSIGNED:      'game:role_assigned',
   GAME_KILL_CONFIRMED:     'game:kill_confirmed',
@@ -801,6 +807,71 @@ export const createSocketServer = (
           errorCode: 'AI_UNAVAILABLE',
         });
       }
+    });
+
+    // ── game:trigger_sabotage ─────────────────────────────────────────
+    socket.on(EVENTS.GAME_TRIGGER_SABOTAGE, async ({ sessionId: sid, missionId }) => {
+      const sessionId = sid || socket.currentSessionId;
+      if (!sessionId || !missionId) return;
+
+      try {
+        const gameRaw = await redisClient.get(`game:${sessionId}`);
+        if (!gameRaw) return;
+
+        const gameState = normalizeGameState(JSON.parse(gameRaw));
+        if (!gameState.impostors.includes(userId)) return; // 임포스터만 가능
+        if (!gameState.alivePlayerIds.includes(userId)) return;
+
+        await redisClient.set(
+          `sabotage:${sessionId}:${missionId}`,
+          '1',
+          { EX: 300 }, // 5분 TTL
+        );
+
+        io.to(`session:${sessionId}`).emit(EVENTS.GAME_SABOTAGE_ACTIVE, {
+          missionId,
+          triggeredBy: userId,
+        });
+
+        console.log(`[WS] sabotage triggered: session=${sessionId} mission=${missionId}`);
+      } catch (err) {
+        console.error('[WS] game:trigger_sabotage error:', err);
+      }
+    });
+
+    // ── game:fix_sabotage ─────────────────────────────────────────────
+    socket.on(EVENTS.GAME_FIX_SABOTAGE, async ({ sessionId: sid, missionId }) => {
+      const sessionId = sid || socket.currentSessionId;
+      if (!sessionId || !missionId) return;
+
+      try {
+        const gameRaw = await redisClient.get(`game:${sessionId}`);
+        if (!gameRaw) return;
+
+        const gameState = normalizeGameState(JSON.parse(gameRaw));
+        if (!gameState.alivePlayerIds.includes(userId)) return;
+
+        await redisClient.del(`sabotage:${sessionId}:${missionId}`);
+
+        io.to(`session:${sessionId}`).emit(EVENTS.GAME_SABOTAGE_FIXED, {
+          missionId,
+          fixedBy: userId,
+        });
+
+        console.log(`[WS] sabotage fixed: session=${sessionId} mission=${missionId}`);
+      } catch (err) {
+        console.error('[WS] game:fix_sabotage error:', err);
+      }
+    });
+
+    // ── call_meeting (game:emergency 별칭) ────────────────────────────
+    socket.on(EVENTS.CALL_MEETING, async (payload, cb) => {
+      socket.emit(EVENTS.GAME_EMERGENCY, payload, cb);
+    });
+
+    // ── submit_vote (game:vote 별칭) ──────────────────────────────────
+    socket.on(EVENTS.SUBMIT_VOTE, (payload, cb) => {
+      socket.emit(EVENTS.GAME_VOTE, payload, cb);
     });
 
     // ── voice:speaking ────────────────────────────────────────────────

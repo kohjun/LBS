@@ -43,7 +43,12 @@
       "Bash(sed -n '190,200p' /c/Users/kohju/AppData/Local/Pub/Cache/hosted/pub.dev/mediasoup_client_flutter-0.8.5/lib/src/handlers/unified_plan.dart)",
       "Bash(sed -n '1340,1360p' /c/Users/kohju/AppData/Local/Pub/Cache/hosted/pub.dev/mediasoup_client_flutter-0.8.5/lib/src/handlers/sdp/media_section.dart)",
       "Bash(PGPASSWORD=postgres psql -h localhost -p 5433 -U kohju -d location_sharing -c \"\\\\d sessions\")",
-      "Bash(PGPASSWORD=postgres psql:*)"
+      "Bash(PGPASSWORD=postgres psql:*)",
+      "Bash(LLM_PROVIDER=local node:*)",
+      "Bash(find *)",
+      "Bash(grep -rn \"rtcPriorityTypeForString\\\\|RTCPriorityType\" C:/MOYA/flutter -path \"*/flutter_webrtc*\" --include=\"*.dart\")",
+      "Bash(xargs grep *)",
+      "Bash(flutter clean *)"
     ]
   }
 }
