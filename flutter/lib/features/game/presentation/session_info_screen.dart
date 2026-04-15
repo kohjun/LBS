@@ -104,10 +104,55 @@ class _SessionInfoContentState extends ConsumerState<SessionInfoContent> {
     // 미션 목록 – isFake가 아닌 것만 표시
     final missions = gameState.missions.where((m) => !m.isFake).toList();
 
+    final totalProgress = gameState.totalTaskProgress;
+    final progressPercent = (totalProgress * 100).round();
+
     return Column(
       children: [
         // ── 헤더 ──────────────────────────────────────────────────────────
         _buildHeader(),
+        // ── 전체 태스크 진행도 바 ──────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    '전체 태스크 진행도',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  Text(
+                    '$progressPercent%',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: totalProgress,
+                  minHeight: 8,
+                  backgroundColor: Colors.white12,
+                  valueColor: const AlwaysStoppedAnimation<Color>(
+                    Color(0xFF22C55E),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
         // ── 스크롤 컨텐츠 ─────────────────────────────────────────────────
         Expanded(
           child: SingleChildScrollView(

@@ -50,6 +50,12 @@ dependencies:
   # 배터리
   battery_plus: ^6.0.1
 
+  # 미니게임 (Flame 엔진)
+  flame: ^1.18.0
+
+  # QR 스캔
+  mobile_scanner: ^5.2.3
+
   # [Task 2] 화면 꺼짐 방지 (OS Background Kill 예방)
   wakelock_plus: ^1.2.8
 

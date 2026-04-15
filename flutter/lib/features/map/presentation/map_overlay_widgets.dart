@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../game/data/game_models.dart' as am_game;
+import '../../game/presentation/minigames/minigame_wrapper_screen.dart';
+import '../../game/presentation/qr_scanner_screen.dart';
+import '../../game/presentation/widgets/mission_list_sheet.dart';
 import 'map_session_models.dart';
 
 class MapFloatingControls extends StatelessWidget {
@@ -59,6 +62,7 @@ class MapOverlayLayer extends StatelessWidget {
     this.onShowMission,
     this.bottomActionOffset = 290,
     this.showTopStatus = true,
+    this.sessionId,
   });
 
   final MapSessionState mapState;
@@ -72,6 +76,9 @@ class MapOverlayLayer extends StatelessWidget {
   final VoidCallback onCloseFinished;
   final double bottomActionOffset;
   final bool showTopStatus;
+
+  /// 세션 ID – 미션 시트 / QR 스캐너에서 Provider 참조에 사용합니다.
+  final String? sessionId;
 
   @override
   Widget build(BuildContext context) {
@@ -99,6 +106,13 @@ class MapOverlayLayer extends StatelessWidget {
     final verbalKillHasTarget = mapState.proximateTargetId != null;
     final canShowMissionButton =
         activeModules.contains('mission') && isInProgress;
+
+    // ready 상태인 위치 기반 미션 목록
+    final readyLocationMissions = amongUsState.myMissions
+        .where((m) =>
+            m.type == am_game.MissionType.location &&
+            m.status == am_game.MissionStatus.ready)
+        .toList();
 
     return Stack(
       children: [
@@ -137,6 +151,118 @@ class MapOverlayLayer extends StatelessWidget {
             child: _OverlayChip(
               icon: Icons.person,
               label: '생존 ${mapState.gameState.aliveCount}명',
+            ),
+          ),
+        // ── 우측 상단: 미션 보기 / QR 스캔 버튼 ─────────────────────────────────
+        if (isInProgress && sessionId != null)
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 126,
+            right: 16,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                GestureDetector(
+                  onTap: () {
+                    showModalBottomSheet<void>(
+                      context: context,
+                      backgroundColor: Colors.transparent,
+                      isScrollControlled: true,
+                      builder: (_) => MissionListSheet(sessionId: sessionId!),
+                    );
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F766E).withValues(alpha: 0.92),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Text(
+                      '미션 보기',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            QrScannerScreen(sessionId: sessionId!),
+                      ),
+                    );
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF7C3AED).withValues(alpha: 0.92),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Text(
+                      'QR 스캔',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        // ── 중앙 하단: 위치 기반 미션 수행 버튼 ─────────────────────────────────
+        if (isInProgress &&
+            readyLocationMissions.isNotEmpty &&
+            sessionId != null)
+          Positioned(
+            bottom: bottomActionOffset + 56,
+            left: 32,
+            right: 32,
+            child: Center(
+              child: GestureDetector(
+                onTap: () {
+                  final mission = readyLocationMissions.first;
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => MinigameWrapperScreen(
+                        sessionId: sessionId!,
+                        missionId: mission.id,
+                        missionTitle: mission.title,
+                      ),
+                    ),
+                  );
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 28, vertical: 14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF16A34A),
+                    borderRadius: BorderRadius.circular(30),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF16A34A).withValues(alpha: 0.45),
+                        blurRadius: 14,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Text(
+                    '${readyLocationMissions.first.title} 수행하기',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 15,
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
         if (showTopStatus &&

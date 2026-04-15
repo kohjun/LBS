@@ -1,5 +1,54 @@
 // lib/features/game/data/game_models.dart
 
+// ── 미니게임 미션 타입 / 상태 ──────────────────────────────────────────────────
+
+enum MissionType { qr, location }
+
+enum MissionStatus { locked, ready, completed }
+
+class Mission {
+  final String id;
+  final String title;
+  final String description;
+  final MissionType type;
+  final MissionStatus status;
+  final double? targetLatitude;
+  final double? targetLongitude;
+  final double radius;
+
+  const Mission({
+    required this.id,
+    required this.title,
+    required this.description,
+    required this.type,
+    this.status = MissionStatus.locked,
+    this.targetLatitude,
+    this.targetLongitude,
+    this.radius = 15.0,
+  });
+
+  Mission copyWith({
+    String? id,
+    String? title,
+    String? description,
+    MissionType? type,
+    MissionStatus? status,
+    double? targetLatitude,
+    double? targetLongitude,
+    double? radius,
+  }) =>
+      Mission(
+        id: id ?? this.id,
+        title: title ?? this.title,
+        description: description ?? this.description,
+        type: type ?? this.type,
+        status: status ?? this.status,
+        targetLatitude: targetLatitude ?? this.targetLatitude,
+        targetLongitude: targetLongitude ?? this.targetLongitude,
+        radius: radius ?? this.radius,
+      );
+}
+
 // ── 게임 역할 ──────────────────────────────────────────────────────────────────
 class GameRole {
   final String role;        // 'crew' | 'impostor'
@@ -128,6 +177,12 @@ class AmongUsGameState {
   /// 이 목록에 포함된 미션만 '수행하기' 버튼이 활성화됩니다.
   final List<String> nearbyMissionIds;
 
+  /// 지오펜스·QR 기반 미니게임 미션 목록.
+  final List<Mission> myMissions;
+
+  /// 전체 태스크 진행도 (0.0 ~ 1.0). 서버 task_progress 이벤트로 갱신됩니다.
+  final double totalTaskProgress;
+
   const AmongUsGameState({
     this.isStarted        = false,
     this.myRole,
@@ -149,6 +204,8 @@ class AmongUsGameState {
     this.shouldNavigateToRole = false,
     this.playableArea,
     this.nearbyMissionIds = const [],
+    this.myMissions = const [],
+    this.totalTaskProgress = 0.0,
   });
 
   AmongUsGameState copyWith({
@@ -168,24 +225,28 @@ class AmongUsGameState {
     bool? shouldNavigateToRole,
     List<Map<String, double>>? playableArea,
     List<String>? nearbyMissionIds,
+    List<Mission>? myMissions,
+    double? totalTaskProgress,
   }) =>
       AmongUsGameState(
-        isStarted:        isStarted        ?? this.isStarted,
-        myRole:           myRole           ?? this.myRole,
-        missions:         missions         ?? this.missions,
-        missionProgress:  missionProgress  ?? this.missionProgress,
-        chatLogs:         chatLogs         ?? this.chatLogs,
-        meetingPhase:     meetingPhase     ?? this.meetingPhase,
-        meetingRemaining: meetingRemaining ?? this.meetingRemaining,
-        totalVoted:       totalVoted       ?? this.totalVoted,
-        totalPlayers:     totalPlayers     ?? this.totalPlayers,
-        voteResult:       voteResult       ?? this.voteResult,
-        gameOverWinner:   gameOverWinner   ?? this.gameOverWinner,
-        isAlive:          isAlive          ?? this.isAlive,
-        preVoteCount:     preVoteCount     ?? this.preVoteCount,
+        isStarted:           isStarted           ?? this.isStarted,
+        myRole:              myRole              ?? this.myRole,
+        missions:            missions            ?? this.missions,
+        missionProgress:     missionProgress     ?? this.missionProgress,
+        chatLogs:            chatLogs            ?? this.chatLogs,
+        meetingPhase:        meetingPhase        ?? this.meetingPhase,
+        meetingRemaining:    meetingRemaining    ?? this.meetingRemaining,
+        totalVoted:          totalVoted          ?? this.totalVoted,
+        totalPlayers:        totalPlayers        ?? this.totalPlayers,
+        voteResult:          voteResult          ?? this.voteResult,
+        gameOverWinner:      gameOverWinner      ?? this.gameOverWinner,
+        isAlive:             isAlive             ?? this.isAlive,
+        preVoteCount:        preVoteCount        ?? this.preVoteCount,
         shouldNavigateToRole:
             shouldNavigateToRole ?? this.shouldNavigateToRole,
-        playableArea:     playableArea     ?? this.playableArea,
-        nearbyMissionIds: nearbyMissionIds ?? this.nearbyMissionIds,
+        playableArea:        playableArea        ?? this.playableArea,
+        nearbyMissionIds:    nearbyMissionIds    ?? this.nearbyMissionIds,
+        myMissions:          myMissions          ?? this.myMissions,
+        totalTaskProgress:   totalTaskProgress   ?? this.totalTaskProgress,
       );
 }

@@ -87,6 +87,7 @@ export const EVENTS = {
   GAME_AI_MESSAGE:         'game:ai_message',
   GAME_AI_REPLY:           'game:ai_reply',
   GAME_MISSION_PROGRESS:   'game:mission_progress',
+  TASK_PROGRESS:           'task_progress',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -709,6 +710,17 @@ export const createSocketServer = (
         const progressData = await MissionSystem.getProgressBar(sessionId);
         socket.emit(EVENTS.GAME_MISSION_PROGRESS, { missionId, ...progressData });
         io.to(`session:${sessionId}`).emit(EVENTS.GAME_MISSION_PROGRESS, progressData);
+
+        // task_progress: 0.0 ~ 1.0 진행도를 방 전체에 브로드캐스트
+        const taskProgressValue = progressData.total > 0
+          ? progressData.completed / progressData.total
+          : 0;
+        io.to(`session:${sessionId}`).emit(EVENTS.TASK_PROGRESS, {
+          progress: taskProgressValue,
+          completed: progressData.completed,
+          total: progressData.total,
+          percent: progressData.percent,
+        });
 
         if (result.allDone) {
           io.to(`session:${sessionId}`).emit(EVENTS.GAME_OVER, { winner: 'crew', reason: 'all_missions_done' });

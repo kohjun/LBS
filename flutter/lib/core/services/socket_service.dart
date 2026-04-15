@@ -357,7 +357,9 @@ class SocketService {
       ..on(gameAiMessage, (data) => _emitGameEvent(gameAiMessage, data))
       ..on(gameAiReply, (data) => _emitGameEvent(gameAiReply, data))
       ..on(gameMissionProgress,
-          (data) => _emitGameEvent(gameMissionProgress, data));
+          (data) => _emitGameEvent(gameMissionProgress, data))
+      ..on(gameTaskProgress,
+          (data) => _emitGameEvent(gameTaskProgress, data));
   }
 
   // ... (아래 joinSession, sendLocation 등 나머지 코드는 기존과 완벽히 동일하므로 생략하지 않고 그대로 유지하세요) ...
@@ -649,6 +651,7 @@ class SocketService {
   static const String gameAiMessage = 'game:ai_message';
   static const String gameAiReply = 'game:ai_reply';
   static const String gameMissionProgress = 'game:mission_progress';
+  static const String gameTaskProgress = 'task_progress';
   static const String gameOver = 'game:over';
 
   // ─────────────────────────────────────────────────────────────────────────

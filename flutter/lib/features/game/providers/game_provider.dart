@@ -265,6 +265,12 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
       }),
     );
 
+    // [4단계] 서버에서 전체 태스크 진행도 수신
+    _subs.add(_socket.onGameEvent(SocketService.gameTaskProgress).listen((data) {
+      final progress = (data['progress'] as num?)?.toDouble() ?? 0.0;
+      state = state.copyWith(totalTaskProgress: progress.clamp(0.0, 1.0));
+    }));
+
     _subs.add(_socket.onGameEvent(SocketService.gameOver).listen((data) {
       // [Task 2] 게임 종료 시 WakeLock 해제 + 효과음
       WakelockPlus.disable();
@@ -292,8 +298,74 @@ class GameNotifier extends StateNotifier<AmongUsGameState> {
   void sendVote(String targetId, Function(Map) onResult) =>
       _socket.sendVote(_sessionId, targetId, onResult);
 
-  void completeMission(String missionId) =>
-      _socket.sendMissionComplete(_sessionId, missionId);
+  // ── [1단계] 미니게임 미션 관리 ────────────────────────────────────────────────
+
+  List<Mission> get myMissions => state.myMissions;
+
+  /// 테스트용 미션 할당: QR 미션 1개 + 위치 기반 미션 1개.
+  void assignInitialMissions() {
+    final missions = [
+      const Mission(
+        id: 'test_qr_01',
+        title: '전선 수리',
+        description: 'QR 코드를 스캔하여 전선 수리 미니게임을 시작하세요.',
+        type: MissionType.qr,
+        status: MissionStatus.locked,
+      ),
+      Mission(
+        id: 'test_loc_01',
+        title: '데이터 업로드',
+        description: '지정된 구역으로 이동하여 데이터를 업로드하세요.',
+        type: MissionType.location,
+        status: MissionStatus.locked,
+        // 테스트 좌표 – 실제 배포 시 서버에서 수신한 값으로 대체하세요.
+        targetLatitude: 37.5665,
+        targetLongitude: 126.9780,
+        radius: 30.0,
+      ),
+    ];
+    state = state.copyWith(myMissions: missions);
+  }
+
+  /// GPS 위치 갱신 시 호출 – 위치 기반 미션의 반경 진입 여부를 판별합니다.
+  void updatePlayerLocation(double lat, double lng) {
+    final updated = state.myMissions.map((m) {
+      if (m.type != MissionType.location ||
+          m.status == MissionStatus.completed ||
+          m.targetLatitude == null ||
+          m.targetLongitude == null) {
+        return m;
+      }
+      final dist = _haversineMeters(lat, lng, m.targetLatitude!, m.targetLongitude!);
+      final isNear = dist <= m.radius;
+      if (isNear && m.status == MissionStatus.locked) {
+        return m.copyWith(status: MissionStatus.ready);
+      }
+      if (!isNear && m.status == MissionStatus.ready) {
+        return m.copyWith(status: MissionStatus.locked);
+      }
+      return m;
+    }).toList();
+
+    final changed = updated.any((m) {
+      final orig = state.myMissions.firstWhere((o) => o.id == m.id);
+      return orig.status != m.status;
+    });
+    if (changed) state = state.copyWith(myMissions: updated);
+  }
+
+  /// 미션을 완료 처리하고 서버에 알립니다.
+  void completeMission(String missionId) {
+    // 로컬 미니게임 미션 완료 처리
+    final updated = state.myMissions.map((m) {
+      if (m.id == missionId) return m.copyWith(status: MissionStatus.completed);
+      return m;
+    }).toList();
+    state = state.copyWith(myMissions: updated);
+
+    // 서버 동기화 (기존 GameMission도 완료 처리)
+    _socket.sendMissionComplete(_sessionId, missionId);
+  }
 
   /// 호스트가 설정한 플레이 가능 영역 폴리곤을 상태에 저장합니다.
   /// null을 전달하면 이탈 경고 판정이 비활성화됩니다.
