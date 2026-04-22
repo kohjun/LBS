@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_naver_map/flutter_naver_map.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'background_service.dart';
 import '../../firebase_options.dart';
 
 class AppInitializationService {
@@ -18,6 +19,14 @@ class AppInitializationService {
   Future<void>? _firebaseInitFuture;
   Future<void>? _naverMapInitFuture;
   Future<SharedPreferences>? _prefsFuture;
+
+  bool _naverMapAuthFailed = false;
+  bool get isNaverMapAuthFailed => _naverMapAuthFailed;
+
+  void resetNaverMapAuthFailure() {
+    _naverMapAuthFailed = false;
+    _naverMapInitFuture = null;
+  }
 
   /// SharedPreferences를 미리 로드해 둡니다.
   /// 이후 [SharedPreferences.getInstance] 호출은 캐시된 인스턴스를 즉시 반환합니다.
@@ -60,6 +69,7 @@ class AppInitializationService {
         clientId: 'ir4goe1vir',
         onAuthFailed: (ex) {
           debugPrint('[NaverMap] Auth failed: $ex');
+          _naverMapAuthFailed = true;
         },
       );
     }).catchError((Object error, StackTrace stackTrace) {
@@ -73,8 +83,7 @@ class AppInitializationService {
 
   Future<void> resetBackgroundFlags() async {
     await _runTimed('Reset background flags', () async {
-      final prefs = await getPrefs();
-      await prefs.setBool('bg_active', false);
+      await shutdownBackgroundService();
     });
   }
 

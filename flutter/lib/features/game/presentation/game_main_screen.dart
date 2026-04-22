@@ -903,6 +903,21 @@ class _GameMainScreenState extends ConsumerState<GameMainScreen>
         next.eliminatedUserIds,
       ));
     }
+
+    // 내 위치가 바뀌고 추적 모드일 때만 카메라 이동 (build 안이 아닌 여기서 처리)
+    final prevPos = previous?.myPosition;
+    final nextPos = next.myPosition;
+    if (_followMe &&
+        nextPos != null &&
+        _mapController != null &&
+        (prevPos?.latitude != nextPos.latitude ||
+            prevPos?.longitude != nextPos.longitude)) {
+      _mapController!.updateCamera(
+        NCameraUpdate.scrollAndZoomTo(
+          target: NLatLng(nextPos.latitude, nextPos.longitude),
+        )..setAnimation(animation: NCameraAnimation.easing),
+      );
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -942,15 +957,7 @@ class _GameMainScreenState extends ConsumerState<GameMainScreen>
             .clamp(0.0, 1.0) as num)
         .toDouble();
 
-    // 카메라 추적
     final myPos = mapState.myPosition;
-    if (_followMe && myPos != null && _mapController != null) {
-      _mapController!.updateCamera(
-        NCameraUpdate.scrollAndZoomTo(
-          target: NLatLng(myPos.latitude, myPos.longitude),
-        )..setAnimation(animation: NCameraAnimation.easing),
-      );
-    }
 
     final winnerId = mapState.gameState.winnerId;
     final winnerName = winnerId != null

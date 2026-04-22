@@ -1,6 +1,7 @@
 // lib/features/lobby/providers/lobby_provider.dart
 
 import 'dart:async';
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -200,11 +201,29 @@ class LobbyNotifier extends StateNotifier<LobbyState> {
   Future<void> refresh() => _loadSession();
 
   Future<void> startGame() async {
+    final repo = _ref.read(sessionRepositoryProvider);
     try {
-      final repo = _ref.read(sessionRepositoryProvider);
       await repo.startGame(_sessionId);
+      return;
+    } on DioException catch (error) {
+      debugPrint('[Lobby] startGame failed: $error');
+
+      // 타임아웃/연결 오류는 서버가 실제로 처리했을 수 있다.
+      // 소켓 이벤트(game:started)로 게임 시작 여부를 확인하고자
+      // 최대 3초까지 대기한다.
+      const pollInterval = Duration(milliseconds: 300);
+      const pollLimit = 10; // 300ms × 10 = 3s
+      for (var i = 0; i < pollLimit; i++) {
+        await Future<void>.delayed(pollInterval);
+        if (state.isGameStarted) return;
+      }
+
+      if (state.isGameStarted) return;
+      rethrow;
     } catch (e) {
       debugPrint('[Lobby] startGame failed: $e');
+      // 다른 오류도 소켓 이벤트가 도착했으면 성공으로 간주
+      if (state.isGameStarted) return;
       rethrow;
     }
   }

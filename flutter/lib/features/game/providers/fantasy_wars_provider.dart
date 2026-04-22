@@ -44,7 +44,8 @@ class FwSpawnZone {
         colorHex: map['color'] as String?,
         polygonPoints: ((map['polygonPoints'] as List?) ?? const [])
             .whereType<Map>()
-            .map((value) => FwGeoPoint.fromMap(Map<String, dynamic>.from(value)))
+            .map(
+                (value) => FwGeoPoint.fromMap(Map<String, dynamic>.from(value)))
             .toList(),
       );
 }
@@ -71,7 +72,8 @@ class FwDuelResult {
 
   factory FwDuelResult.fromMap(Map<String, dynamic> map) {
     final verdict = (map['verdict'] as Map?)?.cast<String, dynamic>() ?? map;
-    final effects = (verdict['effects'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final effects =
+        (verdict['effects'] as Map?)?.cast<String, dynamic>() ?? const {};
     final winner = verdict['winner'] as String?;
     final loser = verdict['loser'] as String?;
 
@@ -124,7 +126,8 @@ class FwDungeonState {
 
   factory FwDungeonState.fromMap(Map<String, dynamic> map) => FwDungeonState(
         id: map['id'] as String? ?? 'dungeon_main',
-        displayName: map['displayName'] as String? ?? map['id'] as String? ?? 'Dungeon',
+        displayName:
+            map['displayName'] as String? ?? map['id'] as String? ?? 'Dungeon',
         status: map['status'] as String? ?? 'open',
         artifact: FwArtifactState.fromMap(
           (map['artifact'] as Map?)?.cast<String, dynamic>() ?? const {},
@@ -173,7 +176,8 @@ class FwControlPoint {
   bool get isPreparing => readyCount > 0 && capturingGuild != null;
 
   factory FwControlPoint.fromMap(Map<String, dynamic> map) {
-    final location = (map['location'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final location =
+        (map['location'] as Map?)?.cast<String, dynamic>() ?? const {};
     return FwControlPoint(
       id: map['id'] as String,
       displayName: map['displayName'] as String? ?? map['id'] as String,
@@ -203,7 +207,8 @@ class FwControlPoint {
     return FwControlPoint(
       id: id,
       displayName: displayName,
-      capturedBy: capturedBy == _fwSentinel ? this.capturedBy : capturedBy as String?,
+      capturedBy:
+          capturedBy == _fwSentinel ? this.capturedBy : capturedBy as String?,
       capturingGuild: capturingGuild == _fwSentinel
           ? this.capturingGuild
           : capturingGuild as String?,
@@ -213,7 +218,9 @@ class FwControlPoint {
           : captureStartedAt as int?,
       readyCount: readyCount ?? this.readyCount,
       requiredCount: requiredCount ?? this.requiredCount,
-      blockadedBy: blockadedBy == _fwSentinel ? this.blockadedBy : blockadedBy as String?,
+      blockadedBy: blockadedBy == _fwSentinel
+          ? this.blockadedBy
+          : blockadedBy as String?,
       blockadeExpiresAt: blockadeExpiresAt == _fwSentinel
           ? this.blockadeExpiresAt
           : blockadeExpiresAt as int?,
@@ -243,7 +250,8 @@ class FwGuildInfo {
         guildId: map['guildId'] as String,
         displayName: map['displayName'] as String? ?? map['guildId'] as String,
         score: (map['score'] as num?)?.toInt() ?? 0,
-        memberIds: (map['memberIds'] as List?)?.whereType<String>().toList() ?? const [],
+        memberIds: (map['memberIds'] as List?)?.whereType<String>().toList() ??
+            const [],
         guildMasterId: map['guildMasterId'] as String?,
       );
 }
@@ -289,13 +297,16 @@ class FwMyState {
   final Map<String, int> skillUsedAt;
 
   bool get isExecutionReady =>
-      executionArmedUntil != null && executionArmedUntil! > DateTime.now().millisecondsSinceEpoch;
+      executionArmedUntil != null &&
+      executionArmedUntil! > DateTime.now().millisecondsSinceEpoch;
 
   bool get isRevealActive =>
-      revealUntil != null && revealUntil! > DateTime.now().millisecondsSinceEpoch;
+      revealUntil != null &&
+      revealUntil! > DateTime.now().millisecondsSinceEpoch;
 
   bool get isBuffActive =>
-      buffedUntil != null && buffedUntil! > DateTime.now().millisecondsSinceEpoch;
+      buffedUntil != null &&
+      buffedUntil! > DateTime.now().millisecondsSinceEpoch;
 
   FwMyState copyWith({
     Object? guildId = _fwSentinel,
@@ -324,14 +335,20 @@ class FwMyState {
       hp: hp ?? this.hp,
       remainingLives: remainingLives ?? this.remainingLives,
       shieldCount: shieldCount ?? this.shieldCount,
-      captureZone: captureZone == _fwSentinel ? this.captureZone : captureZone as String?,
+      captureZone: captureZone == _fwSentinel
+          ? this.captureZone
+          : captureZone as String?,
       inDuel: inDuel ?? this.inDuel,
-      duelExpiresAt: duelExpiresAt == _fwSentinel ? this.duelExpiresAt : duelExpiresAt as int?,
+      duelExpiresAt: duelExpiresAt == _fwSentinel
+          ? this.duelExpiresAt
+          : duelExpiresAt as int?,
       executionArmedUntil: executionArmedUntil == _fwSentinel
           ? this.executionArmedUntil
           : executionArmedUntil as int?,
-      buffedUntil: buffedUntil == _fwSentinel ? this.buffedUntil : buffedUntil as int?,
-      revealUntil: revealUntil == _fwSentinel ? this.revealUntil : revealUntil as int?,
+      buffedUntil:
+          buffedUntil == _fwSentinel ? this.buffedUntil : buffedUntil as int?,
+      revealUntil:
+          revealUntil == _fwSentinel ? this.revealUntil : revealUntil as int?,
       trackedTargetUserId: trackedTargetUserId == _fwSentinel
           ? this.trackedTargetUserId
           : trackedTargetUserId as String?,
@@ -375,13 +392,18 @@ class FwDuelState {
   }) {
     return FwDuelState(
       duelId: duelId == _fwSentinel ? this.duelId : duelId as String?,
-      opponentId: opponentId == _fwSentinel ? this.opponentId : opponentId as String?,
+      opponentId:
+          opponentId == _fwSentinel ? this.opponentId : opponentId as String?,
       phase: phase ?? this.phase,
-      minigameType: minigameType == _fwSentinel ? this.minigameType : minigameType as String?,
+      minigameType: minigameType == _fwSentinel
+          ? this.minigameType
+          : minigameType as String?,
       minigameParams: minigameParams == _fwSentinel
           ? this.minigameParams
           : minigameParams as Map<String, dynamic>?,
-      duelResult: duelResult == _fwSentinel ? this.duelResult : duelResult as FwDuelResult?,
+      duelResult: duelResult == _fwSentinel
+          ? this.duelResult
+          : duelResult as FwDuelResult?,
       submitted: submitted ?? this.submitted,
     );
   }
@@ -462,8 +484,10 @@ abstract class FantasyWarsSocketClient {
   Stream<Map<String, dynamic>> get onFwDuelResult;
   Stream<Map<String, dynamic>> get onFwDuelInvalidated;
   void requestGameState(String sessionId);
-  Future<Map<String, dynamic>> sendFwCaptureStart(String sessionId, String controlPointId);
-  Future<Map<String, dynamic>> sendFwCaptureCancel(String sessionId, String controlPointId);
+  Future<Map<String, dynamic>> sendFwCaptureStart(
+      String sessionId, String controlPointId);
+  Future<Map<String, dynamic>> sendFwCaptureCancel(
+      String sessionId, String controlPointId);
   Future<Map<String, dynamic>> sendFwDungeonEnter(
     String sessionId, {
     String dungeonId = 'dungeon_main',
@@ -474,11 +498,13 @@ abstract class FantasyWarsSocketClient {
     String? targetUserId,
     String? controlPointId,
   });
-  Future<Map<String, dynamic>> sendDuelChallenge(String sessionId, String targetUserId);
+  Future<Map<String, dynamic>> sendDuelChallenge(
+      String sessionId, String targetUserId);
   Future<Map<String, dynamic>> sendDuelAccept(String duelId);
   Future<Map<String, dynamic>> sendDuelReject(String duelId);
   Future<Map<String, dynamic>> sendDuelCancel(String duelId);
-  Future<Map<String, dynamic>> sendDuelSubmit(String duelId, Map<String, dynamic> result);
+  Future<Map<String, dynamic>> sendDuelSubmit(
+      String duelId, Map<String, dynamic> result);
 }
 
 class SocketServiceFantasyWarsClient implements FantasyWarsSocketClient {
@@ -493,13 +519,16 @@ class SocketServiceFantasyWarsClient implements FantasyWarsSocketClient {
   Stream<bool> get onConnectionChange => _socket.onConnectionChange;
 
   @override
-  Stream<Map<String, dynamic>> get onGameStateUpdate => _socket.onGameStateUpdate;
+  Stream<Map<String, dynamic>> get onGameStateUpdate =>
+      _socket.onGameStateUpdate;
 
   @override
-  Stream<Map<String, dynamic>> onGameEvent(String event) => _socket.onGameEvent(event);
+  Stream<Map<String, dynamic>> onGameEvent(String event) =>
+      _socket.onGameEvent(event);
 
   @override
-  Stream<Map<String, dynamic>> get onFwDuelChallenged => _socket.onFwDuelChallenged;
+  Stream<Map<String, dynamic>> get onFwDuelChallenged =>
+      _socket.onFwDuelChallenged;
 
   @override
   Stream<Map<String, dynamic>> get onFwDuelAccepted => _socket.onFwDuelAccepted;
@@ -508,7 +537,8 @@ class SocketServiceFantasyWarsClient implements FantasyWarsSocketClient {
   Stream<Map<String, dynamic>> get onFwDuelRejected => _socket.onFwDuelRejected;
 
   @override
-  Stream<Map<String, dynamic>> get onFwDuelCancelled => _socket.onFwDuelCancelled;
+  Stream<Map<String, dynamic>> get onFwDuelCancelled =>
+      _socket.onFwDuelCancelled;
 
   @override
   Stream<Map<String, dynamic>> get onFwDuelStarted => _socket.onFwDuelStarted;
@@ -517,24 +547,29 @@ class SocketServiceFantasyWarsClient implements FantasyWarsSocketClient {
   Stream<Map<String, dynamic>> get onFwDuelResult => _socket.onFwDuelResult;
 
   @override
-  Stream<Map<String, dynamic>> get onFwDuelInvalidated => _socket.onFwDuelInvalidated;
+  Stream<Map<String, dynamic>> get onFwDuelInvalidated =>
+      _socket.onFwDuelInvalidated;
 
   @override
-  void requestGameState(String sessionId) => _socket.requestGameState(sessionId);
+  void requestGameState(String sessionId) =>
+      _socket.requestGameState(sessionId);
 
   @override
-  Future<Map<String, dynamic>> sendFwCaptureStart(String sessionId, String controlPointId) =>
+  Future<Map<String, dynamic>> sendFwCaptureStart(
+          String sessionId, String controlPointId) =>
       _socket.sendFwCaptureStart(sessionId, controlPointId);
 
   @override
-  Future<Map<String, dynamic>> sendFwCaptureCancel(String sessionId, String controlPointId) =>
+  Future<Map<String, dynamic>> sendFwCaptureCancel(
+          String sessionId, String controlPointId) =>
       _socket.sendFwCaptureCancel(sessionId, controlPointId);
 
   @override
   Future<Map<String, dynamic>> sendFwDungeonEnter(
     String sessionId, {
     String dungeonId = 'dungeon_main',
-  }) => _socket.sendFwDungeonEnter(sessionId, dungeonId: dungeonId);
+  }) =>
+      _socket.sendFwDungeonEnter(sessionId, dungeonId: dungeonId);
 
   @override
   Future<Map<String, dynamic>> sendFwUseSkill(
@@ -542,7 +577,8 @@ class SocketServiceFantasyWarsClient implements FantasyWarsSocketClient {
     required String skill,
     String? targetUserId,
     String? controlPointId,
-  }) => _socket.sendFwUseSkill(
+  }) =>
+      _socket.sendFwUseSkill(
         sessionId,
         skill: skill,
         targetUserId: targetUserId,
@@ -550,20 +586,25 @@ class SocketServiceFantasyWarsClient implements FantasyWarsSocketClient {
       );
 
   @override
-  Future<Map<String, dynamic>> sendDuelChallenge(String sessionId, String targetUserId) =>
+  Future<Map<String, dynamic>> sendDuelChallenge(
+          String sessionId, String targetUserId) =>
       _socket.sendDuelChallenge(sessionId, targetUserId);
 
   @override
-  Future<Map<String, dynamic>> sendDuelAccept(String duelId) => _socket.sendDuelAccept(duelId);
+  Future<Map<String, dynamic>> sendDuelAccept(String duelId) =>
+      _socket.sendDuelAccept(duelId);
 
   @override
-  Future<Map<String, dynamic>> sendDuelReject(String duelId) => _socket.sendDuelReject(duelId);
+  Future<Map<String, dynamic>> sendDuelReject(String duelId) =>
+      _socket.sendDuelReject(duelId);
 
   @override
-  Future<Map<String, dynamic>> sendDuelCancel(String duelId) => _socket.sendDuelCancel(duelId);
+  Future<Map<String, dynamic>> sendDuelCancel(String duelId) =>
+      _socket.sendDuelCancel(duelId);
 
   @override
-  Future<Map<String, dynamic>> sendDuelSubmit(String duelId, Map<String, dynamic> result) =>
+  Future<Map<String, dynamic>> sendDuelSubmit(
+          String duelId, Map<String, dynamic> result) =>
       _socket.sendDuelSubmit(duelId, result);
 }
 
@@ -575,8 +616,8 @@ final fantasyWarsCurrentUserIdProvider = Provider<String?>(
   (ref) => ref.watch(authProvider).valueOrNull?.id,
 );
 
-final fantasyWarsProvider = StateNotifierProvider.family<
-    FantasyWarsNotifier, FantasyWarsGameState, String>(
+final fantasyWarsProvider = StateNotifierProvider.family<FantasyWarsNotifier,
+    FantasyWarsGameState, String>(
   (ref, sessionId) => FantasyWarsNotifier(
     sessionId: sessionId,
     socket: ref.read(fantasyWarsSocketClientProvider),
@@ -618,8 +659,7 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
     _subs.add(_socket.onGameStateUpdate.listen(_handleStateUpdate));
 
     _subs.add(_socket.onGameEvent(SocketService.gameStarted).listen((data) {
-      _handleStateUpdate(data);
-      state = state.copyWith(status: 'in_progress');
+      _handleStateUpdate({...data, 'status': 'in_progress'});
     }));
 
     _subs.add(_socket.onGameEvent(SocketService.gameOver).listen((data) {
@@ -634,7 +674,8 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
         return cp.copyWith(
           capturingGuild: data['guildId'] as String?,
           readyCount: (data['readyCount'] as num?)?.toInt() ?? cp.readyCount,
-          requiredCount: (data['requiredCount'] as num?)?.toInt() ?? cp.requiredCount,
+          requiredCount:
+              (data['requiredCount'] as num?)?.toInt() ?? cp.requiredCount,
         );
       });
     }));
@@ -678,7 +719,8 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
           requiredCount: 0,
         );
       });
-      if (data['guildId'] == state.myState.guildId || data['interruptedByGuild'] == state.myState.guildId) {
+      if (data['guildId'] == state.myState.guildId ||
+          data['interruptedByGuild'] == state.myState.guildId) {
         _scheduleStateRefresh();
       }
     }));
@@ -703,8 +745,10 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
         return;
       }
 
-      final alive = state.alivePlayerIds.where((id) => id != eliminatedId).toList();
-      final eliminated = <String>{...state.eliminatedPlayerIds, eliminatedId}.toList();
+      final alive =
+          state.alivePlayerIds.where((id) => id != eliminatedId).toList();
+      final eliminated =
+          <String>{...state.eliminatedPlayerIds, eliminatedId}.toList();
       state = state.copyWith(
         alivePlayerIds: alive,
         eliminatedPlayerIds: eliminated,
@@ -730,7 +774,8 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
         return;
       }
 
-      final eliminated = state.eliminatedPlayerIds.where((id) => id != revivedId).toList();
+      final eliminated =
+          state.eliminatedPlayerIds.where((id) => id != revivedId).toList();
       final alive = <String>{...state.alivePlayerIds, revivedId}.toList();
       state = state.copyWith(
         alivePlayerIds: alive,
@@ -799,7 +844,8 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
 
     _subs.add(_socket.onGameEvent('fw:player_skill').listen((data) {
       final actorId = data['userId'] as String?;
-      final result = (data['result'] as Map?)?.cast<String, dynamic>() ?? const {};
+      final result =
+          (data['result'] as Map?)?.cast<String, dynamic>() ?? const {};
       final type = result['type'] as String?;
       if (type == null) {
         return;
@@ -808,7 +854,8 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
       switch (type) {
         case 'blockade':
           final cpId = result['cpId'] as String?;
-          final actorGuildId = actorId == null ? null : _guildIdForUser(actorId);
+          final actorGuildId =
+              actorId == null ? null : _guildIdForUser(actorId);
           _mutateControlPoint(cpId, (cp) {
             return cp.copyWith(
               blockadedBy: actorGuildId,
@@ -821,7 +868,8 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
           if (targetUserId == _myUserId) {
             state = state.copyWith(
               myState: state.myState.copyWith(
-                shieldCount: (result['shieldCount'] as num?)?.toInt() ?? state.myState.shieldCount + 1,
+                shieldCount: (result['shieldCount'] as num?)?.toInt() ??
+                    state.myState.shieldCount + 1,
               ),
             );
             _scheduleStateRefresh();
@@ -885,7 +933,9 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
 
     _subs.add(_socket.onFwDuelStarted.listen((data) {
       final rawParams = data['params'];
-      final params = rawParams is Map ? Map<String, dynamic>.from(rawParams) : <String, dynamic>{};
+      final params = rawParams is Map
+          ? Map<String, dynamic>.from(rawParams)
+          : <String, dynamic>{};
       state = state.copyWith(
         duel: FwDuelState(
           duelId: data['duelId'] as String?,
@@ -898,8 +948,8 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
           inDuel: true,
           duelExpiresAt: (data['startedAt'] as num?)?.toInt() == null
               ? state.myState.duelExpiresAt
-              : ((data['startedAt'] as num).toInt()
-                  + ((data['gameTimeoutMs'] as num?)?.toInt() ?? 30000)),
+              : ((data['startedAt'] as num).toInt() +
+                  ((data['gameTimeoutMs'] as num?)?.toInt() ?? 30000)),
         ),
       );
     }));
@@ -956,14 +1006,16 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
     final guilds = <String, FwGuildInfo>{};
     guildRaw.forEach((key, value) {
       if (value is Map) {
-        guilds[key as String] = FwGuildInfo.fromMap(Map<String, dynamic>.from(value));
+        guilds[key as String] =
+            FwGuildInfo.fromMap(Map<String, dynamic>.from(value));
       }
     });
 
     final controlPointRaw = data['controlPoints'] as List? ?? const [];
     final controlPoints = controlPointRaw
         .whereType<Map>()
-        .map((value) => FwControlPoint.fromMap(Map<String, dynamic>.from(value)))
+        .map(
+            (value) => FwControlPoint.fromMap(Map<String, dynamic>.from(value)))
         .toList();
 
     final playableAreaRaw = data['playableArea'] as List? ?? const [];
@@ -981,7 +1033,8 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
     final dungeonRaw = data['dungeons'] as List? ?? const [];
     final dungeons = dungeonRaw
         .whereType<Map>()
-        .map((value) => FwDungeonState.fromMap(Map<String, dynamic>.from(value)))
+        .map(
+            (value) => FwDungeonState.fromMap(Map<String, dynamic>.from(value)))
         .toList();
 
     final hasGuilds = data.containsKey('guilds');
@@ -1001,10 +1054,14 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
       spawnZones: hasSpawnZones ? spawnZones : state.spawnZones,
       dungeons: hasDungeons ? dungeons : state.dungeons,
       alivePlayerIds: hasAlivePlayerIds
-          ? (data['alivePlayerIds'] as List?)?.whereType<String>().toList() ?? const []
+          ? (data['alivePlayerIds'] as List?)?.whereType<String>().toList() ??
+              const []
           : state.alivePlayerIds,
       eliminatedPlayerIds: hasEliminatedPlayerIds
-          ? (data['eliminatedPlayerIds'] as List?)?.whereType<String>().toList() ?? const []
+          ? (data['eliminatedPlayerIds'] as List?)
+                  ?.whereType<String>()
+                  .toList() ??
+              const []
           : state.eliminatedPlayerIds,
       winCondition: hasWinCondition
           ? (data['winCondition'] is Map
@@ -1023,7 +1080,8 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
   }
 
   FwMyState _parseMyState(FwMyState current, Map<String, dynamic> data) {
-    final rawSkillUsedAt = (data['skillUsedAt'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final rawSkillUsedAt =
+        (data['skillUsedAt'] as Map?)?.cast<String, dynamic>() ?? const {};
     final skillUsedAt = <String, int>{};
     rawSkillUsedAt.forEach((skill, usedAt) {
       final lastUsedAt = (usedAt as num?)?.toInt();
@@ -1046,7 +1104,8 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
       isGuildMaster: data['isGuildMaster'] as bool? ?? current.isGuildMaster,
       isAlive: isAlive,
       hp: (data['hp'] as num?)?.toInt() ?? current.hp,
-      remainingLives: (data['remainingLives'] as num?)?.toInt() ?? current.remainingLives,
+      remainingLives:
+          (data['remainingLives'] as num?)?.toInt() ?? current.remainingLives,
       shieldCount: shieldCount,
       captureZone: data['captureZone'] as String?,
       inDuel: data['inDuel'] as bool? ?? current.inDuel,
@@ -1055,8 +1114,10 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
       buffedUntil: (data['buffedUntil'] as num?)?.toInt(),
       revealUntil: (data['revealUntil'] as num?)?.toInt(),
       trackedTargetUserId: data['trackedTargetUserId'] as String?,
-      dungeonEntered: dungeonEntered ?? (!isAlive ? current.dungeonEntered : false),
-      nextReviveChance: isAlive ? null : (nextReviveChance ?? current.nextReviveChance),
+      dungeonEntered:
+          dungeonEntered ?? (!isAlive ? current.dungeonEntered : false),
+      nextReviveChance:
+          isAlive ? null : (nextReviveChance ?? current.nextReviveChance),
       skillUsedAt: hasSkillUsedAt ? skillUsedAt : current.skillUsedAt,
     );
   }
@@ -1068,7 +1129,10 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
     }
   }
 
-  void _scheduleStateRefresh([Duration delay = const Duration(milliseconds: 120)]) {
+  void refreshState() => _requestStateNow();
+
+  void _scheduleStateRefresh(
+      [Duration delay = const Duration(milliseconds: 120)]) {
     _stateRefreshTimer?.cancel();
     _stateRefreshTimer = Timer(delay, () {
       if (mounted && _socket.isConnected) {
@@ -1096,7 +1160,9 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
 
     state = state.copyWith(
       controlPoints: state.controlPoints
-          .map((controlPoint) => controlPoint.id == controlPointId ? update(controlPoint) : controlPoint)
+          .map((controlPoint) => controlPoint.id == controlPointId
+              ? update(controlPoint)
+              : controlPoint)
           .toList(),
     );
   }
@@ -1110,15 +1176,18 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
   }
 
   Future<Map<String, dynamic>> cancelCapture(String controlPointId) async {
-    final result = await _socket.sendFwCaptureCancel(_sessionId, controlPointId);
+    final result =
+        await _socket.sendFwCaptureCancel(_sessionId, controlPointId);
     if (result['ok'] == true) {
       _scheduleStateRefresh();
     }
     return result;
   }
 
-  Future<Map<String, dynamic>> enterDungeon({String dungeonId = 'dungeon_main'}) async {
-    final result = await _socket.sendFwDungeonEnter(_sessionId, dungeonId: dungeonId);
+  Future<Map<String, dynamic>> enterDungeon(
+      {String dungeonId = 'dungeon_main'}) async {
+    final result =
+        await _socket.sendFwDungeonEnter(_sessionId, dungeonId: dungeonId);
     if (result['ok'] == true) {
       state = state.copyWith(
         myState: state.myState.copyWith(
@@ -1177,7 +1246,8 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
     return result;
   }
 
-  Future<Map<String, dynamic>> acceptDuel(String duelId) => _socket.sendDuelAccept(duelId);
+  Future<Map<String, dynamic>> acceptDuel(String duelId) =>
+      _socket.sendDuelAccept(duelId);
 
   Future<Map<String, dynamic>> rejectDuel(String duelId) async {
     final result = await _socket.sendDuelReject(duelId);
@@ -1201,7 +1271,8 @@ class FantasyWarsNotifier extends StateNotifier<FantasyWarsGameState> {
     return result;
   }
 
-  Future<Map<String, dynamic>> submitMinigame(Map<String, dynamic> result) async {
+  Future<Map<String, dynamic>> submitMinigame(
+      Map<String, dynamic> result) async {
     final duelId = state.duel.duelId;
     if (duelId == null || state.duel.submitted) {
       return {'ok': false, 'error': 'DUEL_NOT_ACTIVE'};

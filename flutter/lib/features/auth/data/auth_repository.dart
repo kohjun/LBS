@@ -4,7 +4,9 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/services/background_service.dart';
 import '../../../core/services/fcm_service.dart';
+import '../../../core/services/socket_service.dart';
 
 // 현재 로그인 사용자 모델
 class AppUser {
@@ -88,14 +90,23 @@ final authRepositoryProvider = Provider((ref) => AuthRepository());
 
 // 현재 로그인 사용자 상태
 class AuthNotifier extends AsyncNotifier<AppUser?> {
+  Future<void> _clearLocalSessionState() async {
+    SocketService().leaveSession(notifyServer: false);
+    SocketService().disconnect();
+    await shutdownBackgroundService();
+    await FcmService().dispose();
+  }
+
   @override
   Future<AppUser?> build() async {
     // 401 복구 실패 시 자동 로그아웃 (build 완료 후 실행)
     ApiClient.onUnauthenticated = () {
-      Future.microtask(() {
-        if (state.valueOrNull != null) {
-          state = const AsyncData(null);
+      Future.microtask(() async {
+        if (state.valueOrNull == null) {
+          return;
         }
+        await _clearLocalSessionState();
+        state = const AsyncData(null);
       });
     };
     // 앱 시작 시 저장된 토큰으로 사용자 복원
@@ -140,9 +151,12 @@ class AuthNotifier extends AsyncNotifier<AppUser?> {
   }
 
   Future<void> logout() async {
-    await FcmService().dispose();
-    await ref.read(authRepositoryProvider).logout();
-    state = const AsyncData(null);
+    try {
+      await _clearLocalSessionState();
+      await ref.read(authRepositoryProvider).logout();
+    } finally {
+      state = const AsyncData(null);
+    }
   }
 }
 

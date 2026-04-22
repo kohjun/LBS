@@ -1,4 +1,4 @@
-// lib/core/services/socket_service.dart
+﻿// lib/core/services/socket_service.dart
 
 import 'dart:async';
 import 'dart:math' as math;
@@ -106,6 +106,8 @@ class SocketService {
   io.Socket? _socket;
   bool _isConnected = false;
   String? _currentSessionId;
+  Completer<void>? _connectCompleter;
+  Timer? _connectTimeoutTimer;
 
   // ── 지수 백오프 재연결 ────────────────────────────────────────────────────
   int _reconnectAttempts = 0;
@@ -113,7 +115,7 @@ class SocketService {
   Timer? _reconnectTimer;
   static const _baseDelayMs = 3000; // 초기 대기 시간: 3s
   static const _maxDelayMs = 30000; // 최대 대기 시간: 30s
-  static const _maxReconnectAttempts = 3; // 최대 재연결 횟수
+  static const _maxReconnectAttempts = 8; // 최대 재연결 횟수
 
   // 스트림 컨트롤러 (UI 레이어에서 구독)
   final _locationController = StreamController<LocationPayload>.broadcast();
@@ -231,9 +233,44 @@ class SocketService {
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> connect() async {
     if (_isConnected) return;
+    if (_connectCompleter != null) {
+      return _connectCompleter!.future;
+    }
+
+    // 기존 자동 재연결 타이머를 취소하고 카운터를 초기화한다.
+    // 그렇지 않으면 타이머가 뒤늦게 발동해 새 소켓에 connect()를 중복 호출하거나,
+    // 이전 실패 횟수가 남아 새 소켓의 자동 재연결이 즉시 차단될 수 있다.
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnectScheduled = false;
+    _reconnectAttempts = 0;
+
+    // 기존 소켓 인스턴스가 남아 있으면 먼저 완전히 해제한다.
+    // destroy()를 호출하지 않으면 핸들러가 두 소켓에 동시에 등록된 채로 남는다.
+    final oldSocket = _socket;
+    if (oldSocket != null) {
+      _socket = null;
+      oldSocket.clearListeners();
+      oldSocket.destroy();
+    }
 
     final token = await ApiClient().getAccessToken();
     if (token == null) throw Exception('NOT_AUTHENTICATED');
+
+    final completer = Completer<void>();
+    _connectCompleter = completer;
+    _connectTimeoutTimer?.cancel();
+    _connectTimeoutTimer = Timer(const Duration(seconds: 8), () {
+      if (_connectCompleter == completer && !completer.isCompleted) {
+        completer.completeError(
+          TimeoutException(
+            'Socket connect timeout',
+            const Duration(seconds: 8),
+          ),
+        );
+        _connectCompleter = null;
+      }
+    });
 
     _socket = io.io(
       _wsUrl,
@@ -248,6 +285,7 @@ class SocketService {
 
     _registerEventHandlers();
     _socket!.connect(); // 핸들러 등록 후 연결 시작
+    return completer.future;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -260,10 +298,23 @@ class SocketService {
         _reconnectAttempts = 0; // 성공 시 카운터 초기화
         _reconnectScheduled = false;
         _reconnectTimer?.cancel();
+        _connectTimeoutTimer?.cancel();
+        final completer = _connectCompleter;
+        if (completer != null && !completer.isCompleted) {
+          completer.complete();
+        }
+        _connectCompleter = null;
         _connectionController.add(true);
       })
       ..onDisconnect((reason) {
         _isConnected = false;
+        _connectTimeoutTimer?.cancel();
+        if (_connectCompleter != null && !_connectCompleter!.isCompleted) {
+          _connectCompleter!.completeError(
+            Exception('SOCKET_DISCONNECTED_BEFORE_CONNECT'),
+          );
+          _connectCompleter = null;
+        }
         _connectionController.add(false);
         // 클라이언트 측 수동 해제가 아닐 때만 재연결 시도
         if (reason != 'io client disconnect') {
@@ -272,6 +323,13 @@ class SocketService {
       })
       ..onConnectError((err) {
         debugPrint('[Socket] Connect error: $err');
+        _connectTimeoutTimer?.cancel();
+        if (_connectCompleter != null && !_connectCompleter!.isCompleted) {
+          _connectCompleter!.completeError(
+            Exception('SOCKET_CONNECT_ERROR: $err'),
+          );
+          _connectCompleter = null;
+        }
         _scheduleReconnect();
       })
 

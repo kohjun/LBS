@@ -20,6 +20,8 @@ class FcmService {
   StreamSubscription<String>? _tokenRefreshSub;
   StreamSubscription<RemoteMessage>? _foregroundMessageSub;
 
+  bool get isInitialized => _initialized;
+
   Future<void> _saveTokenToServer(String token) async {
     try {
       await _api.patch('/auth/fcm-token', data: {'token': token});

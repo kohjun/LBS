@@ -428,6 +428,14 @@ export default async function sessionRoutes(fastify) {
           ...(err.details ?? {}),
         });
       }
+      if (
+        err.message === 'FANTASY_WARS_PLAYABLE_AREA_REQUIRED' ||
+        err.message === 'FANTASY_WARS_CONTROL_POINTS_REQUIRED' ||
+        err.message === 'FANTASY_WARS_SPAWN_ZONES_REQUIRED' ||
+        err.message === 'CONTROL_POINT_LOCATIONS_REQUIRED'
+      ) {
+        return reply.code(400).send({ error: err.message });
+      }
       throw err;
     }
   });

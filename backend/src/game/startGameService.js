@@ -14,6 +14,45 @@ const GAME_EVENTS = {
   aiMessage:    'game:ai_message',
 };
 
+async function emitGameStartAnnouncement({ io, sessionId, session, gameState, aliveMembers }) {
+  try {
+    const ps = gameState.pluginState ?? {};
+    const gameType = session.game_type ?? 'among_us';
+    let msg;
+
+    if (gameType === 'fantasy_wars_artifact') {
+      const roomLike = {
+        roomId: sessionId,
+        pluginState: ps,
+        alivePlayerIds: aliveMembers.map((member) => member.user_id),
+      };
+      msg = await AIDirector.fwOnGameStart(roomLike);
+    } else {
+      const impostors = Array.isArray(ps.impostors) ? ps.impostors : [];
+      const roomLike = {
+        players: new Map(
+          aliveMembers.map((member) => [member.user_id, {
+            userId: member.user_id,
+            nickname: member.nickname ?? member.user_id,
+            team: impostors.includes(member.user_id) ? 'impostor' : 'crew',
+          }]),
+        ),
+        impostors,
+      };
+      msg = await AIDirector.onGameStart(roomLike);
+    }
+
+    if (msg) {
+      io.to(`session:${sessionId}`).emit(GAME_EVENTS.aiMessage, {
+        type: 'announcement',
+        message: msg,
+      });
+    }
+  } catch (error) {
+    console.error('[AI] game start announcement failed:', error.message);
+  }
+}
+
 function assertFantasyWarsLayoutReady(session, config) {
   const playableArea = Array.isArray(session?.playable_area) ? session.playable_area : [];
   const controlPoints = Array.isArray(config?.controlPoints) ? config.controlPoints : [];
@@ -130,35 +169,13 @@ export const startGameForSession = async ({ io, sessionId, requesterUserId }) =>
   }
 
   // ── AI 시작 알림 ──────────────────────────────────────────────────────────
-  try {
-    const ps        = gameState.pluginState ?? {};
-    const gameType  = session.game_type ?? 'among_us';
-    let msg;
-
-    if (gameType === 'fantasy_wars_artifact') {
-      const roomLike = { roomId: sessionId, pluginState: ps, alivePlayerIds: aliveMembers.map(m => m.user_id) };
-      msg = await AIDirector.fwOnGameStart(roomLike);
-    } else {
-      const impostors = Array.isArray(ps.impostors) ? ps.impostors : [];
-      const roomLike = {
-        players: new Map(
-          aliveMembers.map(m => [m.user_id, {
-            userId: m.user_id,
-            nickname: m.nickname ?? m.user_id,
-            team: impostors.includes(m.user_id) ? 'impostor' : 'crew',
-          }]),
-        ),
-        impostors,
-      };
-      msg = await AIDirector.onGameStart(roomLike);
-    }
-
-    if (msg) {
-      io.to(`session:${sessionId}`).emit(GAME_EVENTS.aiMessage, { type: 'announcement', message: msg });
-    }
-  } catch (e) {
-    console.error('[AI] game start announcement failed:', e.message);
-  }
+  void emitGameStartAnnouncement({
+    io,
+    sessionId,
+    session,
+    gameState,
+    aliveMembers,
+  });
 
   return { session, aliveMembers, gameState, startedPayload };
 };

@@ -18,6 +18,13 @@ import 'notification_service.dart';
 const notificationChannelId = 'location_tracking_channel';
 const notificationId = 888;
 bool _backgroundServiceInitialized = false;
+const _backgroundPreferenceKeys = <String>[
+  'bg_token',
+  'bg_refresh_token',
+  'bg_session_id',
+  'bg_server_url',
+  'bg_wakeup_requested',
+];
 
 Future<void> initializeBackgroundService() async {
   if (_backgroundServiceInitialized) {
@@ -66,6 +73,23 @@ Future<void> initializeBackgroundService() async {
   debugPrint(
     '[Background] Service configured in ${stopwatch.elapsedMilliseconds}ms',
   );
+}
+
+Future<void> shutdownBackgroundService() async {
+  try {
+    final service = FlutterBackgroundService();
+    try {
+      service.invoke('stopService');
+    } catch (_) {}
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('bg_active', false);
+    for (final key in _backgroundPreferenceKeys) {
+      await prefs.remove(key);
+    }
+  } catch (e) {
+    debugPrint('[Background] Failed to shut down service cleanly: $e');
+  }
 }
 
 // iOS 전용 백그라운드 핸들러

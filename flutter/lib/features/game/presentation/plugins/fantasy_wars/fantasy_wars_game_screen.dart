@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -8,6 +8,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../../../../core/router/app_router.dart';
 import '../../../../../core/services/app_initialization_service.dart';
+import '../../../../../core/services/fcm_service.dart';
+import '../../../../../core/services/mediasoup_audio_service.dart';
 import '../../../../../core/services/socket_service.dart';
 import '../../../../auth/data/auth_repository.dart';
 import '../../../../home/data/session_repository.dart';
@@ -26,12 +28,22 @@ class FantasyWarsGameScreen extends ConsumerStatefulWidget {
   final String sessionId;
 
   @override
-  ConsumerState<FantasyWarsGameScreen> createState() => _FantasyWarsGameScreenState();
+  ConsumerState<FantasyWarsGameScreen> createState() =>
+      _FantasyWarsGameScreenState();
 }
 
 class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
   NaverMapController? _mapController;
   bool _mapSdkReady = false;
+  bool _bootstrapping = false;
+  String? _bootstrapError;
+
+  // NaverMap 위젯 자체 준비 상태 (onMapReady 이후 true)
+  bool _naverMapWidgetReady = false;
+  String? _naverMapWidgetError;
+  Timer? _naverMapWidgetTimer;
+  bool _naverMapTimerStarted = false;
+  Key _mapViewKey = const ValueKey('naver_map_v1');
 
   final Map<String, NCircleOverlay> _cpOverlays = {};
   final Map<String, NPolygonOverlay> _spawnZoneOverlays = {};
@@ -39,6 +51,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
   NPolygonOverlay? _playableAreaOverlay;
 
   Timer? _overlaySyncTimer;
+  Timer? _bootstrapTimeoutTimer;
+  StreamSubscription<bool>? _socketConnectionSub;
   int _overlaySyncRequestId = 0;
   String? _lastOverlaySignature;
   String? _lastControlPointSignature;
@@ -51,12 +65,25 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
   @override
   void initState() {
     super.initState();
-    unawaited(_initMap());
+    _socketConnectionSub =
+        SocketService().onConnectionChange.listen((connected) {
+      if (!connected) {
+        return;
+      }
+
+      final socket = SocketService();
+      socket.joinSession(widget.sessionId);
+      ref.read(fantasyWarsProvider(widget.sessionId).notifier).refreshState();
+    });
+    unawaited(_bootstrapScreen());
   }
 
   @override
   void dispose() {
     _overlaySyncTimer?.cancel();
+    _bootstrapTimeoutTimer?.cancel();
+    _naverMapWidgetTimer?.cancel();
+    _socketConnectionSub?.cancel();
     _cpOverlays.clear();
     _spawnZoneOverlays.clear();
     _playerMarkers.clear();
@@ -64,12 +91,284 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     super.dispose();
   }
 
-  Future<void> _initMap() async {
-    await AppInitializationService().ensureNaverMapInitialized();
-    if (!mounted) {
+  Future<void> _bootstrapScreen() async {
+    debugPrint('[FW-BOOT] bootstrap started, sessionId=${widget.sessionId}');
+    _bootstrapTimeoutTimer?.cancel();
+    if (mounted) {
+      setState(() {
+        _bootstrapping = true;
+        _bootstrapError = null;
+      });
+    }
+
+    try {
+      final socket = SocketService();
+      debugPrint('[FW-BOOT] socket.isConnected=${socket.isConnected}');
+      if (!socket.isConnected) {
+        debugPrint('[FW-BOOT] connecting socket...');
+        await socket.connect();
+        debugPrint('[FW-BOOT] socket connected');
+      }
+
+      socket.joinSession(widget.sessionId);
+      debugPrint('[FW-BOOT] joinSession emitted, currentSessionId=${socket.currentSessionId}');
+
+      ref.read(fantasyWarsProvider(widget.sessionId).notifier).refreshState();
+      debugPrint('[FW-BOOT] game:request_state emitted');
+
+      debugPrint('[FW-BOOT] naver map sdk init...');
+      await AppInitializationService().ensureNaverMapInitialized();
+      debugPrint('[FW-BOOT] naver map sdk ready, authFailed=${AppInitializationService().isNaverMapAuthFailed}');
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _mapSdkReady = true;
+        _bootstrapping = false;
+      });
+      debugPrint('[FW-BOOT] _mapSdkReady=true, bootstrap phase complete');
+
+      unawaited(_warmInitialGameState());
+      _scheduleBootstrapTimeout();
+    } catch (error, stackTrace) {
+      debugPrint('[FW-BOOT] bootstrap FAILED: $error');
+      debugPrintStack(
+        label: '[FW-BOOT] bootstrap stack',
+        stackTrace: stackTrace,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _bootstrapping = false;
+        _bootstrapError = error.toString();
+      });
+    }
+  }
+
+  void _scheduleBootstrapTimeout() {
+    _bootstrapTimeoutTimer?.cancel();
+    _bootstrapTimeoutTimer = Timer(const Duration(seconds: 8), () {
+      if (!mounted) {
+        return;
+      }
+
+      final fwState = ref.read(fantasyWarsProvider(widget.sessionId));
+      if (_hasRenderableGameState(fwState) || _bootstrapError != null) {
+        return;
+      }
+
+      final mapState = ref.read(mapSessionProvider(widget.sessionId));
+      setState(() {
+        _bootstrapError = mapState.isConnected || mapState.hasEverConnected
+            ? '게임 상태를 아직 받지 못했습니다. 다시 시도해 주세요.'
+            : '게임 서버 연결이 지연되고 있습니다. 다시 시도해 주세요.';
+      });
+    });
+  }
+
+  bool _hasRenderableGameState(FantasyWarsGameState fwState) {
+    return fwState.status != 'none' ||
+        fwState.guilds.isNotEmpty ||
+        fwState.controlPoints.isNotEmpty ||
+        fwState.playableArea.length >= 3 ||
+        fwState.spawnZones.isNotEmpty;
+  }
+
+  Future<void> _warmInitialGameState() async {
+    final notifier = ref.read(fantasyWarsProvider(widget.sessionId).notifier);
+    const delays = <Duration>[
+      Duration.zero,
+      Duration(milliseconds: 500),
+      Duration(milliseconds: 1400),
+    ];
+
+    for (final delay in delays) {
+      if (delay > Duration.zero) {
+        await Future<void>.delayed(delay);
+      }
+      if (!mounted) {
+        return;
+      }
+      final fwState = ref.read(fantasyWarsProvider(widget.sessionId));
+      if (_hasRenderableGameState(fwState)) {
+        debugPrint(
+          '[FW-BOOT] game:state_update seen — status=${fwState.status}, '
+          'guilds=${fwState.guilds.length}, '
+          'controlPoints=${fwState.controlPoints.length}, '
+          'playableArea=${fwState.playableArea.length}',
+        );
+        return;
+      }
+      debugPrint('[FW-BOOT] no renderable state yet, delay=${delay.inMilliseconds}ms, retrying...');
+      notifier.refreshState();
+    }
+    debugPrint('[FW-BOOT] warm init done — state still not renderable after retries');
+  }
+
+  void _reconcileBootstrapState(FantasyWarsGameState fwState) {
+    if (!_hasRenderableGameState(fwState)) {
       return;
     }
-    setState(() => _mapSdkReady = true);
+
+    _bootstrapTimeoutTimer?.cancel();
+
+    if (_bootstrapError == null) {
+      return;
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _bootstrapError == null) {
+        return;
+      }
+      setState(() => _bootstrapError = null);
+    });
+  }
+
+  bool _isCriticalBootstrapReady(
+    FantasyWarsGameState fwState,
+    MapSessionState mapState,
+  ) {
+    return _bootstrapSteps(fwState, mapState)
+        .where((step) => step.required)
+        .every((step) => step.ready);
+  }
+
+  List<_BootstrapStep> _bootstrapSteps(
+    FantasyWarsGameState fwState,
+    MapSessionState mapState,
+  ) {
+    final socket = SocketService();
+    final socketConnected = socket.isConnected;
+    final sessionSubscribed = socket.currentSessionId == widget.sessionId;
+    final stateReady = _hasRenderableGameState(fwState);
+    final mapReady = _mapSdkReady;
+    final gpsReady = mapState.myPosition != null;
+    final voiceReady = MediaSoupAudioService().isReady;
+    final fcmReady = FcmService().isInitialized;
+
+    return [
+      _BootstrapStep(
+        title: '실시간 서버 연결',
+        description: socketConnected
+            ? '소켓 연결이 완료되었습니다.'
+            : '백엔드와 소켓 연결을 수립하는 중입니다.',
+        ready: socketConnected,
+        required: true,
+        icon: Icons.hub_rounded,
+      ),
+      _BootstrapStep(
+        title: '세션 채널 구독',
+        description: sessionSubscribed
+            ? '현재 세션 채널에 참가했습니다.'
+            : '게임 세션 채널에 참가하는 중입니다.',
+        ready: sessionSubscribed,
+        required: true,
+        icon: Icons.link_rounded,
+      ),
+      _BootstrapStep(
+        title: '초기 게임 상태 수신',
+        description: stateReady
+            ? '전장 정보와 플레이어 상태를 받았습니다.'
+            : '거점, 길드, 개인 상태를 서버에서 불러오는 중입니다.',
+        ready: stateReady,
+        required: true,
+        icon: Icons.sync_alt_rounded,
+      ),
+      _BootstrapStep(
+        title: '지도 엔진 초기화',
+        description: mapReady
+            ? '네이버 지도 SDK 준비가 끝났습니다.'
+            : '지도 엔진과 전장 오버레이를 준비하는 중입니다.',
+        ready: mapReady,
+        required: true,
+        icon: Icons.map_rounded,
+      ),
+      _BootstrapStep(
+        title: '현재 위치 확보',
+        description: gpsReady
+            ? '현재 위치를 받았습니다.'
+            : 'GPS 위치를 잡는 중입니다. 이 단계는 백그라운드에서 이어집니다.',
+        ready: gpsReady,
+        required: false,
+        icon: Icons.my_location_rounded,
+      ),
+      _BootstrapStep(
+        title: '음성 채널 준비',
+        description: voiceReady
+            ? '음성 채널 준비가 완료되었습니다.'
+            : 'Mediasoup 음성 채널을 연결하는 중입니다.',
+        ready: voiceReady,
+        required: false,
+        icon: Icons.headset_mic_rounded,
+      ),
+      _BootstrapStep(
+        title: '알림 채널 준비',
+        description: fcmReady
+            ? 'FCM 초기화가 완료되었습니다.'
+            : '푸시 알림 모듈을 백그라운드에서 준비하는 중입니다.',
+        ready: fcmReady,
+        required: false,
+        icon: Icons.notifications_active_rounded,
+      ),
+    ];
+  }
+
+  String _bootstrapHeadline(
+    FantasyWarsGameState fwState,
+    MapSessionState mapState,
+  ) {
+    if (_bootstrapError != null) {
+      return '게임 준비에 실패했습니다';
+    }
+
+    for (final step in _bootstrapSteps(fwState, mapState)) {
+      if (step.required && !step.ready) {
+        return '${step.title} 준비 중';
+      }
+    }
+    return '전장 준비 완료';
+  }
+
+  String _bootstrapDescription(
+    FantasyWarsGameState fwState,
+    MapSessionState mapState,
+  ) {
+    if (_bootstrapError != null) {
+      final socket = SocketService();
+      if (!socket.isConnected) {
+        return '실시간 서버 연결이 지연되고 있습니다. 네트워크 상태를 확인한 뒤 다시 시도해 주세요.';
+      }
+      if (!_hasRenderableGameState(fwState)) {
+        return '서버와 연결되었지만 초기 게임 상태를 아직 받지 못했습니다. 다시 시도하면 상태를 다시 요청합니다.';
+      }
+      return '초기화 중 문제가 발생했습니다. 다시 시도해 주세요.';
+    }
+
+    for (final step in _bootstrapSteps(fwState, mapState)) {
+      if (step.required && !step.ready) {
+        return step.description;
+      }
+    }
+    return '필수 모듈 준비가 끝났습니다. 선택 모듈은 백그라운드에서 이어서 초기화됩니다.';
+  }
+
+  Future<void> _retryBootstrap() async {
+    // Reset NaverMap widget state so the overlay and timer restart.
+    if (mounted) {
+      setState(() {
+        _naverMapWidgetReady = false;
+        _naverMapWidgetError = null;
+        _naverMapTimerStarted = false;
+        _mapController = null;
+        _mapViewKey = UniqueKey();
+        _mapSdkReady = false;
+      });
+    }
+    AppInitializationService().resetNaverMapAuthFailure();
+    await _bootstrapScreen();
   }
 
   Future<void> _syncMapOverlays(
@@ -124,7 +423,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     if (_playableAreaOverlay != null) {
       try {
         await controller.deleteOverlay(
-          const NOverlayInfo(type: NOverlayType.polygonOverlay, id: 'fw_playable_area'),
+          const NOverlayInfo(
+              type: NOverlayType.polygonOverlay, id: 'fw_playable_area'),
         );
       } catch (_) {}
       _playableAreaOverlay = null;
@@ -136,7 +436,9 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     if (fwState.playableArea.length >= 3) {
       final polygon = NPolygonOverlay(
         id: 'fw_playable_area',
-        coords: fwState.playableArea.map((point) => NLatLng(point.lat, point.lng)).toList(),
+        coords: fwState.playableArea
+            .map((point) => NLatLng(point.lat, point.lng))
+            .toList(),
         color: const Color(0xFF38BDF8).withValues(alpha: 0.08),
         outlineColor: const Color(0xFF38BDF8).withValues(alpha: 0.8),
         outlineWidth: 3,
@@ -165,7 +467,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
         } catch (_) {}
       }
 
-      final color = _colorFromHex(spawnZone.colorHex) ?? guildColor(spawnZone.teamId);
+      final color =
+          _colorFromHex(spawnZone.colorHex) ?? guildColor(spawnZone.teamId);
       final overlay = NPolygonOverlay(
         id: overlayId,
         coords: spawnZone.polygonPoints
@@ -251,7 +554,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
       _cpOverlays.remove(controlPointId);
       try {
         await controller.deleteOverlay(
-          NOverlayInfo(type: NOverlayType.circleOverlay, id: 'cp_$controlPointId'),
+          NOverlayInfo(
+              type: NOverlayType.circleOverlay, id: 'cp_$controlPointId'),
         );
       } catch (_) {}
       if (!mounted || syncId != _overlaySyncRequestId) {
@@ -353,7 +657,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     required FantasyWarsGameState fwState,
     required String? myId,
   }) {
-    if ((member.lat == 0 && member.lng == 0) || mapState.eliminatedUserIds.contains(userId)) {
+    if ((member.lat == 0 && member.lng == 0) ||
+        mapState.eliminatedUserIds.contains(userId)) {
       return null;
     }
 
@@ -383,8 +688,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     final memberGuildId = _guildIdForUser(fwState.guilds, userId);
     final isMe = userId == myId;
     final isAlly = memberGuildId == fwState.myState.guildId;
-    final isTrackedTarget =
-        fwState.myState.isRevealActive && fwState.myState.trackedTargetUserId == userId;
+    final isTrackedTarget = fwState.myState.isRevealActive &&
+        fwState.myState.trackedTargetUserId == userId;
     final isSelected = userId == _selectedMemberId;
 
     final markerColor = isSelected
@@ -411,7 +716,11 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
         haloColor: Colors.black,
       ),
     );
-    marker.setGlobalZIndex(isSelected ? 300 : isTrackedTarget ? 240 : 160);
+    marker.setGlobalZIndex(isSelected
+        ? 300
+        : isTrackedTarget
+            ? 240
+            : 160);
     marker.setOnTapListener((_) {
       unawaited(_handleMemberTapped(
         userId: userId,
@@ -434,7 +743,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     for (final entry in mapState.members.entries) {
       final userId = entry.key;
       final member = entry.value;
-      if ((member.lat == 0 && member.lng == 0) || mapState.eliminatedUserIds.contains(userId)) {
+      if ((member.lat == 0 && member.lng == 0) ||
+          mapState.eliminatedUserIds.contains(userId)) {
         continue;
       }
 
@@ -587,7 +897,17 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
       if (!mounted) {
         return;
       }
-      unawaited(_syncMapOverlays(fwState, mapState, myId, syncId));
+      unawaited(() async {
+        try {
+          await _syncMapOverlays(fwState, mapState, myId, syncId);
+        } catch (error, stackTrace) {
+          debugPrint('[FantasyWars] overlay sync failed: $error');
+          debugPrintStack(
+            label: '[FantasyWars] overlay sync stack',
+            stackTrace: stackTrace,
+          );
+        }
+      }());
     });
   }
 
@@ -605,7 +925,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     }
     _lastWasKicked = mapState.wasKicked;
 
-    if (_lastDuelPhase != 'invalidated' && fwState.duel.phase == 'invalidated') {
+    if (_lastDuelPhase != 'invalidated' &&
+        fwState.duel.phase == 'invalidated') {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) {
           return;
@@ -701,7 +1022,10 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
       return;
     }
 
-    await ref.read(sessionRepositoryProvider).leaveSession(widget.sessionId).catchError((_) {});
+    await ref
+        .read(sessionRepositoryProvider)
+        .leaveSession(widget.sessionId)
+        .catchError((_) {});
     SocketService().leaveSession(sessionId: widget.sessionId);
     if (!mounted) {
       return;
@@ -718,7 +1042,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     return null;
   }
 
-  ({double lat, double lng})? _myPosition(MapSessionState mapState, String? myId) {
+  ({double lat, double lng})? _myPosition(
+      MapSessionState mapState, String? myId) {
     if (mapState.myPosition != null) {
       return (
         lat: mapState.myPosition!.latitude,
@@ -765,7 +1090,9 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     String? myId,
   ) {
     final myPosition = _myPosition(mapState, myId);
-    if (myPosition == null || controlPoint.lat == null || controlPoint.lng == null) {
+    if (myPosition == null ||
+        controlPoint.lat == null ||
+        controlPoint.lng == null) {
       return null;
     }
     return _distanceMeters(
@@ -788,7 +1115,9 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
 
     final myPosition = _myPosition(mapState, myId);
     final member = mapState.members[userId];
-    if (myPosition == null || member == null || (member.lat == 0 && member.lng == 0)) {
+    if (myPosition == null ||
+        member == null ||
+        (member.lat == 0 && member.lng == 0)) {
       return null;
     }
 
@@ -825,7 +1154,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
 
       final memberGuildId = _guildIdForUser(fwState.guilds, userId);
       if (enemy) {
-        return memberGuildId != null && memberGuildId != fwState.myState.guildId;
+        return memberGuildId != null &&
+            memberGuildId != fwState.myState.guildId;
       }
       if (userId == myId) {
         return true;
@@ -847,11 +1177,14 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     String? myId,
   ) {
     final controlPoints = fwState.controlPoints
-        .where((controlPoint) => controlPoint.lat != null && controlPoint.lng != null)
+        .where((controlPoint) =>
+            controlPoint.lat != null && controlPoint.lng != null)
         .toList();
     controlPoints.sort((a, b) {
-      final aDistance = _distanceToControlPoint(a, mapState, myId) ?? double.infinity;
-      final bDistance = _distanceToControlPoint(b, mapState, myId) ?? double.infinity;
+      final aDistance =
+          _distanceToControlPoint(a, mapState, myId) ?? double.infinity;
+      final bDistance =
+          _distanceToControlPoint(b, mapState, myId) ?? double.infinity;
       return aDistance.compareTo(bDistance);
     });
     return controlPoints;
@@ -894,7 +1227,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
                       ),
                     ),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
                         color: Colors.white.withValues(alpha: 0.08),
                         borderRadius: BorderRadius.circular(999),
@@ -937,7 +1271,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
                               ),
                             ),
                             child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 13),
                               child: Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
@@ -953,7 +1288,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
                                   const SizedBox(width: 12),
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
                                         Row(
                                           children: [
@@ -989,7 +1325,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
                                           Text(
                                             choice.helper!,
                                             style: TextStyle(
-                                              color: accent.withValues(alpha: 0.92),
+                                              color: accent.withValues(
+                                                  alpha: 0.92),
                                               fontSize: 11,
                                               fontWeight: FontWeight.w600,
                                             ),
@@ -1043,17 +1380,26 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     );
 
     final choices = userIds.map((userId) {
-      final nickname = userId == myId ? '나' : _memberLabel(mapState.members, userId);
+      final nickname =
+          userId == myId ? '나' : _memberLabel(mapState.members, userId);
       final distance = _distanceToMember(userId, mapState, myId);
       final guildId = _guildIdForUser(fwState.guilds, userId);
-      final guildName = guildId == null ? null : fwState.guilds[guildId]?.displayName ?? guildId;
+      final guildName = guildId == null
+          ? null
+          : fwState.guilds[guildId]?.displayName ?? guildId;
       final isNearest = userIds.isNotEmpty && identical(userIds.first, userId);
       return _TargetChoice(
         value: userId,
         label: nickname,
         subtitle: guildName ?? (userId == myId ? '현재 플레이어' : '길드 정보 없음'),
-        trailing: distance != null && distance.isFinite ? '${distance.round()}m' : '거리 불명',
-        badge: userId == myId ? '자신' : enemy ? '적' : '아군',
+        trailing: distance != null && distance.isFinite
+            ? '${distance.round()}m'
+            : '거리 불명',
+        badge: userId == myId
+            ? '자신'
+            : enemy
+                ? '적'
+                : '아군',
         helper: isNearest ? '현재 위치 기준 가장 가까운 대상' : null,
         accentColor: userId == myId
             ? Colors.white
@@ -1080,10 +1426,12 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     final controlPoints = _candidateControlPoints(fwState, mapState, myId);
     final choices = controlPoints.map((controlPoint) {
       final distance = _distanceToControlPoint(controlPoint, mapState, myId);
-      final isNearest = controlPoints.isNotEmpty && controlPoints.first.id == controlPoint.id;
+      final isNearest =
+          controlPoints.isNotEmpty && controlPoints.first.id == controlPoint.id;
       final ownerGuild = controlPoint.capturedBy == null
           ? null
-          : fwState.guilds[controlPoint.capturedBy!]?.displayName ?? controlPoint.capturedBy;
+          : fwState.guilds[controlPoint.capturedBy!]?.displayName ??
+              controlPoint.capturedBy;
       final isOwnedByMe = controlPoint.capturedBy == fwState.myState.guildId;
       final badge = controlPoint.isBlockaded
           ? '봉쇄'
@@ -1101,10 +1449,14 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
         value: controlPoint.id,
         label: controlPoint.displayName,
         subtitle: ownerGuild == null ? '미점령 거점' : '점령 길드 · $ownerGuild',
-        trailing: distance != null && distance.isFinite ? '${distance.round()}m' : '거리 불명',
+        trailing: distance != null && distance.isFinite
+            ? '${distance.round()}m'
+            : '거리 불명',
         badge: badge,
         helper: helper ?? (isNearest ? '현재 위치 기준 가장 가까운 거점' : null),
-        accentColor: controlPoint.isBlockaded ? Colors.redAccent : _cpFillColor(controlPoint),
+        accentColor: controlPoint.isBlockaded
+            ? Colors.redAccent
+            : _cpFillColor(controlPoint),
         icon: Icons.place_rounded,
         isHighlighted: isNearest,
       );
@@ -1119,7 +1471,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     return members[userId]?.nickname ?? userId;
   }
 
-  FwControlPoint? _controlPointById(FantasyWarsGameState fwState, String? controlPointId) {
+  FwControlPoint? _controlPointById(
+      FantasyWarsGameState fwState, String? controlPointId) {
     if (controlPointId == null) {
       return null;
     }
@@ -1185,11 +1538,14 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
 
     final member = mapState.members[userId];
     final guildId = _guildIdForUser(fwState.guilds, userId);
-    final guildLabel = guildId == null ? '길드 정보 없음' : fwState.guilds[guildId]?.displayName ?? guildId;
+    final guildLabel = guildId == null
+        ? '길드 정보 없음'
+        : fwState.guilds[guildId]?.displayName ?? guildId;
     final distance = _distanceToMember(userId, mapState, myId);
     final isEnemy = guildId != null && guildId != fwState.myState.guildId;
     final isSelf = userId == myId;
-    final isAlly = !isSelf && guildId != null && guildId == fwState.myState.guildId;
+    final isAlly =
+        !isSelf && guildId != null && guildId == fwState.myState.guildId;
     final canAct = fwState.myState.isAlive && !fwState.myState.inDuel;
     final notifier = ref.read(fantasyWarsProvider(widget.sessionId).notifier);
 
@@ -1295,7 +1651,9 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
         ),
       );
     }
-    if (fwState.myState.isAlive && !fwState.myState.inDuel && fwState.myState.job == 'mage') {
+    if (fwState.myState.isAlive &&
+        !fwState.myState.inDuel &&
+        fwState.myState.job == 'mage') {
       actions.add(
         _QuickAction(
           label: '봉쇄 마법',
@@ -1303,7 +1661,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
           color: const Color(0xFF7C3AED),
           onTap: () async {
             Navigator.of(context).pop();
-            await _runAck(() => notifier.useSkill(controlPointId: controlPoint.id));
+            await _runAck(
+                () => notifier.useSkill(controlPointId: controlPoint.id));
           },
         ),
       );
@@ -1311,7 +1670,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
 
     final ownerGuild = controlPoint.capturedBy == null
         ? '미점령'
-        : fwState.guilds[controlPoint.capturedBy!]?.displayName ?? controlPoint.capturedBy!;
+        : fwState.guilds[controlPoint.capturedBy!]?.displayName ??
+            controlPoint.capturedBy!;
 
     await _showQuickActionSheet(
       title: controlPoint.displayName,
@@ -1319,12 +1679,15 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
         '점령 길드 · $ownerGuild',
         if (distance != null && distance.isFinite) '${distance.round()}m',
       ].join(' · '),
-      accentColor: controlPoint.isBlockaded ? Colors.redAccent : _cpFillColor(controlPoint),
+      accentColor: controlPoint.isBlockaded
+          ? Colors.redAccent
+          : _cpFillColor(controlPoint),
       lines: [
         if (controlPoint.isBlockaded) '현재 봉쇄 중입니다.',
         if (controlPoint.requiredCount > 0)
           '점령 준비 ${controlPoint.readyCount}/${controlPoint.requiredCount}',
-        if (controlPoint.capturingGuild != null && controlPoint.requiredCount == 0)
+        if (controlPoint.capturingGuild != null &&
+            controlPoint.requiredCount == 0)
           '점령 진행 중인 거점입니다.',
       ],
       actions: actions,
@@ -1386,7 +1749,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
                   for (final line in lines) ...[
                     Text(
                       line,
-                      style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      style:
+                          const TextStyle(color: Colors.white70, fontSize: 12),
                     ),
                     const SizedBox(height: 6),
                   ],
@@ -1401,7 +1765,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
                         FilledButton.tonalIcon(
                           onPressed: () => unawaited(action.onTap()),
                           style: FilledButton.styleFrom(
-                            backgroundColor: action.color.withValues(alpha: 0.18),
+                            backgroundColor:
+                                action.color.withValues(alpha: 0.18),
                             foregroundColor: action.color,
                           ),
                           icon: Icon(action.icon, size: 18),
@@ -1440,8 +1805,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     MapSessionState mapState,
     String? myId,
   ) async {
-    final nearest =
-        _controlPointById(fwState, _selectedControlPointId) ?? _nearestControlPoint(fwState, mapState, myId);
+    final nearest = _controlPointById(fwState, _selectedControlPointId) ??
+        _nearestControlPoint(fwState, mapState, myId);
     final notifier = ref.read(fantasyWarsProvider(widget.sessionId).notifier);
     if (nearest == null) {
       _showError('근처 거점을 찾지 못했습니다.');
@@ -1452,7 +1817,9 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
         nearest.capturingGuild == fwState.myState.guildId;
 
     await _runAck(() {
-      return isCancelling ? notifier.cancelCapture(nearest.id) : notifier.startCapture(nearest.id);
+      return isCancelling
+          ? notifier.cancelCapture(nearest.id)
+          : notifier.startCapture(nearest.id);
     });
   }
 
@@ -1551,18 +1918,20 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
           enemy: true,
         ) ??
         await _pickMemberTarget(
-      title: '대결할 적 선택',
-      mapState: mapState,
-      fwState: fwState,
-      myId: myId,
-      enemy: true,
-    );
+          title: '대결할 적 선택',
+          mapState: mapState,
+          fwState: fwState,
+          myId: myId,
+          enemy: true,
+        );
     if (targetUserId == null) {
       return;
     }
 
     await _runAck(() {
-      return ref.read(fantasyWarsProvider(widget.sessionId).notifier).challengeDuel(targetUserId);
+      return ref
+          .read(fantasyWarsProvider(widget.sessionId).notifier)
+          .challengeDuel(targetUserId);
     });
   }
 
@@ -1598,6 +1967,241 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
         _ => code ?? '처리에 실패했습니다.',
       };
 
+  void _startNaverMapWidgetTimer() {
+    _naverMapWidgetTimer?.cancel();
+    debugPrint('[FW-BOOT] NaverMap widget timer started (15s)');
+    _naverMapWidgetTimer = Timer(const Duration(seconds: 15), () {
+      if (!mounted || _naverMapWidgetReady) return;
+      debugPrint('[FW-BOOT] NaverMap widget timer EXPIRED — onMapReady not received');
+      setState(() {
+        _naverMapWidgetError =
+            AppInitializationService().isNaverMapAuthFailed
+                ? 'NaverMap 인증에 실패했습니다.\n'
+                    '클라이언트 ID(ir4goe1vir)가 이 기기/환경에서 유효한지 확인해 주세요.'
+                : 'NaverMap 로딩 시간이 초과되었습니다.\n'
+                    '네트워크 상태를 확인하거나 다시 시도해 주세요.';
+      });
+    });
+  }
+
+  Widget _buildMapLoadingOverlay() {
+    if (_naverMapWidgetError != null) {
+      return ColoredBox(
+        color: const Color(0xFF0F172A),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.map_outlined, color: Colors.white54, size: 48),
+                const SizedBox(height: 16),
+                Text(
+                  _naverMapWidgetError!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 13,
+                    height: 1.45,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    OutlinedButton(
+                      onPressed: _retryBootstrap,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: const BorderSide(color: Colors.white24),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 24, vertical: 12),
+                      ),
+                      child: const Text('다시 시도'),
+                    ),
+                    const SizedBox(width: 12),
+                    FilledButton(
+                      onPressed: _confirmLeave,
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 24, vertical: 12),
+                      ),
+                      child: const Text('나가기'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return const ColoredBox(
+      color: Color(0xFF0F172A),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(color: Colors.white54, strokeWidth: 3),
+            SizedBox(height: 14),
+            Text(
+              '전장 지도 로딩 중...',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+
+  Widget _buildLoadingView(
+    BuildContext context, {
+    required FantasyWarsGameState fwState,
+    required MapSessionState mapState,
+  }) {
+    final steps = _bootstrapSteps(fwState, mapState);
+    final waiting =
+        _bootstrapError == null && !_isCriticalBootstrapReady(fwState, mapState);
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return ColoredBox(
+      color: const Color(0xFF0F172A),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: const Color(0xFF020617).withValues(alpha: 0.82),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: Colors.white12),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Colors.black54,
+                    blurRadius: 30,
+                    offset: Offset(0, 16),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 52,
+                        height: 52,
+                        decoration: BoxDecoration(
+                          color: waiting
+                              ? const Color(0xFF0EA5E9).withValues(alpha: 0.16)
+                              : colorScheme.error.withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        child: waiting
+                            ? const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: CircularProgressIndicator(strokeWidth: 3),
+                              )
+                            : Icon(
+                                Icons.error_outline_rounded,
+                                color: colorScheme.error,
+                              ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _bootstrapHeadline(fwState, mapState),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 20,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              _bootstrapDescription(fwState, mapState),
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                                height: 1.45,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.04),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: Colors.white10),
+                    ),
+                    child: Column(
+                      children: [
+                        for (var index = 0; index < steps.length; index++) ...[
+                          _BootstrapStepTile(step: steps[index]),
+                          if (index != steps.length - 1)
+                            const Divider(color: Colors.white12, height: 16),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    '필수 단계가 끝나야 전장 화면을 표시합니다. 선택 단계는 게임 화면이 열린 뒤에도 이어서 초기화됩니다.',
+                    style: TextStyle(
+                      color: Colors.white54,
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _bootstrapping ? null : _retryBootstrap,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            side: const BorderSide(color: Colors.white24),
+                            padding: const EdgeInsets.symmetric(vertical: 13),
+                          ),
+                          child: const Text('다시 시도'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: _confirmLeave,
+                          style: FilledButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 13),
+                          ),
+                          child: const Text('로비로 나가기'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final fwState = ref.watch(fantasyWarsProvider(widget.sessionId));
@@ -1605,7 +2209,22 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     final authUser = ref.watch(authProvider).valueOrNull;
     final myId = authUser?.id;
 
+    _reconcileBootstrapState(fwState);
     _handleStateSideEffects(fwState, mapState, myId);
+
+    final showBootstrapView =
+        !_isCriticalBootstrapReady(fwState, mapState) || _bootstrapError != null;
+
+    // NaverMap 위젯이 처음 표시되는 순간 타이머를 시작한다.
+    if (!showBootstrapView && !_naverMapTimerStarted && !_naverMapWidgetReady) {
+      _naverMapTimerStarted = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_naverMapWidgetReady && _naverMapWidgetError == null) {
+          debugPrint('[FW-BOOT] game screen first frame rendered, starting NaverMap widget timer');
+          _startNaverMapWidgetTimer();
+        }
+      });
+    }
 
     final bottomSafe = MediaQuery.of(context).padding.bottom;
     final chipOffset = bottomSafe + 80;
@@ -1646,7 +2265,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
         : null;
 
     final memberLabels = <String, String>{
-      for (final entry in mapState.members.entries) entry.key: entry.value.nickname,
+      for (final entry in mapState.members.entries)
+        entry.key: entry.value.nickname,
     };
 
     return PopScope(
@@ -1658,149 +2278,178 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
       },
       child: Scaffold(
         backgroundColor: Colors.black,
-        body: Stack(
-          children: [
-            if (_mapSdkReady)
-              Positioned.fill(
-                child: NaverMap(
-                  options: NaverMapViewOptions(
-                    locationButtonEnable: false,
-                    initialCameraPosition: NCameraPosition(
-                      target: mapState.myPosition != null
-                          ? NLatLng(
-                              mapState.myPosition!.latitude,
-                              mapState.myPosition!.longitude,
-                            )
-                          : const NLatLng(37.5665, 126.9780),
-                      zoom: 16,
+        body: showBootstrapView
+            ? _buildLoadingView(
+                context,
+                fwState: fwState,
+                mapState: mapState,
+              )
+            : Stack(
+                children: [
+                  Positioned.fill(
+                    child: NaverMap(
+                      key: _mapViewKey,
+                      options: NaverMapViewOptions(
+                        locationButtonEnable: false,
+                        initialCameraPosition: NCameraPosition(
+                          target: mapState.myPosition != null
+                              ? NLatLng(
+                                  mapState.myPosition!.latitude,
+                                  mapState.myPosition!.longitude,
+                                )
+                              : const NLatLng(37.5665, 126.9780),
+                          zoom: 16,
+                        ),
+                      ),
+                      onMapTapped: (_, __) {
+                        if (_selectedMemberId != null ||
+                            _selectedControlPointId != null) {
+                          _setSelection();
+                        }
+                      },
+                      onMapReady: (controller) async {
+                        debugPrint('[FW-BOOT] NaverMap onMapReady fired — platform view ready');
+                        _mapController = controller;
+                        _lastOverlaySignature = null;
+                        _lastControlPointSignature = null;
+                        _lastBattlefieldSignature = null;
+                        if (mounted) {
+                          setState(() {
+                            _naverMapWidgetReady = true;
+                            _naverMapWidgetError = null;
+                            _naverMapWidgetTimer?.cancel();
+                          });
+                          debugPrint('[FW-BOOT] NaverMap widget ready — first renderable state achieved');
+                        }
+                        try {
+                          controller.setLocationTrackingMode(
+                            NLocationTrackingMode.noFollow,
+                          );
+                        } catch (_) {}
+                        _scheduleOverlaySync(fwState, mapState, myId);
+                      },
                     ),
                   ),
-                  onMapTapped: (_, __) {
-                    if (_selectedMemberId != null || _selectedControlPointId != null) {
-                      _setSelection();
-                    }
-                  },
-                  onMapReady: (controller) async {
-                    _mapController = controller;
-                    _lastOverlaySignature = null;
-                    _lastControlPointSignature = null;
-                    _lastBattlefieldSignature = null;
-                    try {
-                      controller.setLocationTrackingMode(NLocationTrackingMode.noFollow);
-                    } catch (_) {}
-                    _scheduleOverlaySync(fwState, mapState, myId);
-                  },
-                ),
-              )
-            else
-              const Positioned.fill(
-                child: ColoredBox(
-                  color: Color(0xFF0F172A),
-                  child: Center(child: CircularProgressIndicator()),
-                ),
-              ),
-            FwTopHud(
-              myState: fwState.myState,
-              guilds: fwState.guilds,
-              aliveCount: fwState.alivePlayerIds.length,
-            ),
-            FwWorldStatusPanel(
-              myState: fwState.myState,
-              dungeons: fwState.dungeons,
-              memberLabels: memberLabels,
-            ),
-            Positioned(
-              top: MediaQuery.of(context).padding.top + 8,
-              right: 12,
-              child: SafeArea(
-                child: TextButton(
-                  onPressed: _confirmLeave,
-                  style: TextButton.styleFrom(
-                    backgroundColor: Colors.black54,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  FwTopHud(
+                    myState: fwState.myState,
+                    guilds: fwState.guilds,
+                    aliveCount: fwState.alivePlayerIds.length,
                   ),
-                  child: const Text('나가기'),
-                ),
-              ),
-            ),
-            FwControlPointChips(
-              controlPoints: fwState.controlPoints,
-              myGuildId: fwState.myState.guildId,
-              bottomOffset: chipOffset,
-            ),
-            FwActionDock(
-              bottomOffset: chipOffset,
-              captureLabel: captureLabel,
-              onCapture: canShowCapture
-                  ? () => unawaited(_handleCaptureAction(fwState, mapState, myId))
-                  : null,
-              duelLabel: duelLabel,
-              onDuel: duelLabel == null
-                  ? null
-                  : () => unawaited(_handleDuelAction(fwState, mapState, myId)),
-              dungeonLabel: dungeonLabel,
-              onDungeon: (!fwState.myState.isAlive && !fwState.myState.dungeonEntered)
-                  ? () => unawaited(_runAck(() {
+                  FwWorldStatusPanel(
+                    myState: fwState.myState,
+                    dungeons: fwState.dungeons,
+                    memberLabels: memberLabels,
+                  ),
+                  Positioned(
+                    top: MediaQuery.of(context).padding.top + 8,
+                    right: 12,
+                    child: SafeArea(
+                      child: TextButton(
+                        onPressed: _confirmLeave,
+                        style: TextButton.styleFrom(
+                          backgroundColor: Colors.black54,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 6,
+                          ),
+                        ),
+                        child: const Text('나가기'),
+                      ),
+                    ),
+                  ),
+                  FwControlPointChips(
+                    controlPoints: fwState.controlPoints,
+                    myGuildId: fwState.myState.guildId,
+                    bottomOffset: chipOffset,
+                  ),
+                  FwActionDock(
+                    bottomOffset: chipOffset,
+                    captureLabel: captureLabel,
+                    onCapture: canShowCapture
+                        ? () => unawaited(
+                            _handleCaptureAction(fwState, mapState, myId))
+                        : null,
+                    duelLabel: duelLabel,
+                    onDuel: duelLabel == null
+                        ? null
+                        : () => unawaited(
+                            _handleDuelAction(fwState, mapState, myId)),
+                    dungeonLabel: dungeonLabel,
+                    onDungeon: (!fwState.myState.isAlive &&
+                            !fwState.myState.dungeonEntered)
+                        ? () => unawaited(_runAck(() {
+                              return ref
+                                  .read(
+                                    fantasyWarsProvider(widget.sessionId)
+                                        .notifier,
+                                  )
+                                  .enterDungeon();
+                            }))
+                        : null,
+                  ),
+                  if (fwState.myState.isAlive && !fwState.myState.inDuel)
+                    FwSkillButton(
+                      job: fwState.myState.job,
+                      skillUsedAt: fwState.myState.skillUsedAt,
+                      bottomOffset: chipOffset,
+                      onPressed: () => unawaited(
+                        _handleSkillAction(fwState, mapState, myId),
+                      ),
+                    ),
+                  if (fwState.duel.phase == 'challenged' &&
+                      fwState.duel.duelId != null)
+                    FwDuelChallengeDialog(
+                      duelId: fwState.duel.duelId!,
+                      opponentId: fwState.duel.opponentId,
+                      onAccept: () => unawaited(_runAck(() {
                         return ref
-                            .read(fantasyWarsProvider(widget.sessionId).notifier)
-                            .enterDungeon();
-                      }))
-                  : null,
-            ),
-            if (fwState.myState.isAlive && !fwState.myState.inDuel)
-              FwSkillButton(
-                job: fwState.myState.job,
-                skillUsedAt: fwState.myState.skillUsedAt,
-                bottomOffset: chipOffset,
-                onPressed: () => unawaited(_handleSkillAction(fwState, mapState, myId)),
+                            .read(
+                                fantasyWarsProvider(widget.sessionId).notifier)
+                            .acceptDuel(fwState.duel.duelId!);
+                      })),
+                      onReject: () => unawaited(_runAck(() {
+                        return ref
+                            .read(
+                                fantasyWarsProvider(widget.sessionId).notifier)
+                            .rejectDuel(fwState.duel.duelId!);
+                      })),
+                    ),
+                  if (fwState.duel.phase == 'challenging')
+                    FwChallengingIndicator(
+                      opponentId: fwState.duel.opponentId,
+                      onCancel: () => unawaited(_runAck(() {
+                        return ref
+                            .read(
+                                fantasyWarsProvider(widget.sessionId).notifier)
+                            .cancelDuel();
+                      })),
+                    ),
+                  if (fwState.duel.phase == 'in_game')
+                    FwDuelScreen(
+                      sessionId: widget.sessionId,
+                      duel: fwState.duel,
+                    ),
+                  if (fwState.duel.phase == 'result' &&
+                      fwState.duel.duelResult != null)
+                    FwDuelResultOverlay(
+                      result: fwState.duel.duelResult!,
+                      myId: myId,
+                      onClose: () => ref
+                          .read(fantasyWarsProvider(widget.sessionId).notifier)
+                          .clearDuelResult(),
+                    ),
+                  if (fwState.isFinished && fwState.winCondition != null)
+                    FwGameOverOverlay(
+                      winCondition: fwState.winCondition!,
+                      myGuildId: fwState.myState.guildId,
+                      guilds: fwState.guilds,
+                      onLeave: _confirmLeave,
+                    ),
+                  if (!_naverMapWidgetReady)
+                    Positioned.fill(child: _buildMapLoadingOverlay()),
+                ],
               ),
-            if (fwState.duel.phase == 'challenged' && fwState.duel.duelId != null)
-              FwDuelChallengeDialog(
-                duelId: fwState.duel.duelId!,
-                opponentId: fwState.duel.opponentId,
-                onAccept: () => unawaited(_runAck(() {
-                  return ref
-                      .read(fantasyWarsProvider(widget.sessionId).notifier)
-                      .acceptDuel(fwState.duel.duelId!);
-                })),
-                onReject: () => unawaited(_runAck(() {
-                  return ref
-                      .read(fantasyWarsProvider(widget.sessionId).notifier)
-                      .rejectDuel(fwState.duel.duelId!);
-                })),
-              ),
-            if (fwState.duel.phase == 'challenging')
-              FwChallengingIndicator(
-                opponentId: fwState.duel.opponentId,
-                onCancel: () => unawaited(_runAck(() {
-                  return ref
-                      .read(fantasyWarsProvider(widget.sessionId).notifier)
-                      .cancelDuel();
-                })),
-              ),
-            if (fwState.duel.phase == 'in_game')
-              FwDuelScreen(
-                sessionId: widget.sessionId,
-                duel: fwState.duel,
-              ),
-            if (fwState.duel.phase == 'result' && fwState.duel.duelResult != null)
-              FwDuelResultOverlay(
-                result: fwState.duel.duelResult!,
-                myId: myId,
-                onClose: () => ref
-                    .read(fantasyWarsProvider(widget.sessionId).notifier)
-                    .clearDuelResult(),
-              ),
-            if (fwState.isFinished && fwState.winCondition != null)
-              FwGameOverOverlay(
-                winCondition: fwState.winCondition!,
-                myGuildId: fwState.myState.guildId,
-                guilds: fwState.guilds,
-                onLeave: _confirmLeave,
-              ),
-          ],
-        ),
       ),
     );
   }
@@ -1828,6 +2477,114 @@ class _TargetChoice<T> {
   final Color? accentColor;
   final IconData icon;
   final bool isHighlighted;
+}
+
+class _BootstrapStep {
+  const _BootstrapStep({
+    required this.title,
+    required this.description,
+    required this.ready,
+    required this.required,
+    required this.icon,
+  });
+
+  final String title;
+  final String description;
+  final bool ready;
+  final bool required;
+  final IconData icon;
+}
+
+class _BootstrapStepTile extends StatelessWidget {
+  const _BootstrapStepTile({required this.step});
+
+  final _BootstrapStep step;
+
+  @override
+  Widget build(BuildContext context) {
+    final accentColor = step.ready
+        ? const Color(0xFF22C55E)
+        : step.required
+            ? const Color(0xFF38BDF8)
+            : Colors.white54;
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 38,
+          height: 38,
+          decoration: BoxDecoration(
+            color: accentColor.withValues(alpha: 0.14),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Icon(
+            step.ready ? Icons.check_rounded : step.icon,
+            color: accentColor,
+            size: 20,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      step.title,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: (step.required
+                              ? const Color(0xFF0EA5E9)
+                              : Colors.white70)
+                          .withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                        color: (step.required
+                                ? const Color(0xFF0EA5E9)
+                                : Colors.white54)
+                            .withValues(alpha: 0.4),
+                      ),
+                    ),
+                    child: Text(
+                      step.required ? '필수' : '선택',
+                      style: TextStyle(
+                        color: step.required
+                            ? const Color(0xFF7DD3FC)
+                            : Colors.white70,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                step.description,
+                style: const TextStyle(
+                  color: Colors.white60,
+                  fontSize: 12,
+                  height: 1.35,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _ChoiceBadge extends StatelessWidget {
@@ -1873,4 +2630,3 @@ class _QuickAction {
   final Color color;
   final Future<void> Function() onTap;
 }
-

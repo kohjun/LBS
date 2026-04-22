@@ -218,7 +218,12 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
       );
       if (connected) {
         _socket.joinSession(_sessionId);
-        unawaited(_audio.ensureJoined(_sessionId));
+        // Defer audio reconnect to avoid blocking map rendering on reconnection.
+        unawaited(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 400));
+          if (!mounted) return;
+          await _audio.ensureJoined(_sessionId);
+        }());
       }
     });
 
