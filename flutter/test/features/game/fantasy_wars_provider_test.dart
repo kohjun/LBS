@@ -10,6 +10,7 @@ class FakeFantasyWarsSocketClient implements FantasyWarsSocketClient {
   bool connected;
   final requestedSessionIds = <String>[];
   Map<String, dynamic> duelChallengeResponse = const {'ok': true, 'duelId': 'duel-1'};
+  Map<String, dynamic> duelAcceptResponse = const {'ok': true};
   final _connectionController = StreamController<bool>.broadcast();
   final _gameStateController = StreamController<Map<String, dynamic>>.broadcast();
   final _gameEventControllers = <String, StreamController<Map<String, dynamic>>>{};
@@ -77,6 +78,9 @@ class FakeFantasyWarsSocketClient implements FantasyWarsSocketClient {
 
   void emitDuelResult(Map<String, dynamic> data) => _fwDuelResultController.add(data);
 
+  void emitDuelInvalidated(Map<String, dynamic> data) =>
+      _fwDuelInvalidatedController.add(data);
+
   @override
   void requestGameState(String sessionId) {
     requestedSessionIds.add(sessionId);
@@ -105,11 +109,19 @@ class FakeFantasyWarsSocketClient implements FantasyWarsSocketClient {
   }) async => const {'ok': true};
 
   @override
-  Future<Map<String, dynamic>> sendDuelChallenge(String sessionId, String targetUserId) async =>
+  Future<Map<String, dynamic>> sendDuelChallenge(
+    String sessionId,
+    String targetUserId, {
+    Map<String, dynamic>? proximity,
+  }) async =>
       duelChallengeResponse;
 
   @override
-  Future<Map<String, dynamic>> sendDuelAccept(String duelId) async => const {'ok': true};
+  Future<Map<String, dynamic>> sendDuelAccept(
+    String duelId, {
+    Map<String, dynamic>? proximity,
+  }) async =>
+      duelAcceptResponse;
 
   @override
   Future<Map<String, dynamic>> sendDuelReject(String duelId) async => const {'ok': true};
@@ -310,8 +322,8 @@ void main() {
 
       socket.emitDuelStarted({
         'duelId': 'duel-1',
-        'minigameType': 'reaction',
-        'params': {'seed': 'abc'},
+        'minigameType': 'reaction_time',
+        'params': {'signalDelayMs': 1200},
         'startedAt': 1000,
         'gameTimeoutMs': 30000,
       });
@@ -319,7 +331,7 @@ void main() {
 
       state = container.read(fantasyWarsProvider('session-a'));
       expect(state.duel.phase, 'in_game');
-      expect(state.duel.minigameType, 'reaction');
+      expect(state.duel.minigameType, 'reaction_time');
       expect(state.myState.inDuel, isTrue);
       expect(state.myState.duelExpiresAt, 31000);
 
@@ -341,6 +353,115 @@ void main() {
       expect(state.duel.duelResult?.shieldAbsorbed, isTrue);
       expect(state.myState.inDuel, isFalse);
       expect(state.myState.duelExpiresAt, isNull);
+    });
+
+    test('stores duel debug info when challenge is rejected', () async {
+      final socket = FakeFantasyWarsSocketClient()
+        ..duelChallengeResponse = const {
+          'ok': false,
+          'error': 'BLE_PROXIMITY_REQUIRED',
+          'distanceMeters': 17,
+          'duelRangeMeters': 20,
+          'bleEvidenceFreshnessMs': 12000,
+          'allowGpsFallbackWithoutBle': false,
+          'proximitySource': 'gps_fallback',
+          'bleConfirmed': false,
+          'gpsFallbackUsed': true,
+          'mutualProximity': false,
+          'recentProximityReports': 1,
+          'freshestEvidenceAgeMs': 900,
+        };
+      final container = ProviderContainer(
+        overrides: [
+          fantasyWarsSocketClientProvider.overrideWithValue(socket),
+          fantasyWarsCurrentUserIdProvider.overrideWithValue('user-1'),
+        ],
+      );
+      addTearDown(() {
+        container.dispose();
+        socket.dispose();
+      });
+
+      final notifier = container.read(fantasyWarsProvider('session-a').notifier);
+      final result = await notifier.challengeDuel('enemy-1');
+
+      expect(result['ok'], isFalse);
+      final state = container.read(fantasyWarsProvider('session-a'));
+      expect(state.duel.phase, 'idle');
+      expect(state.duelDebug?.stage, 'challenge');
+      expect(state.duelDebug?.ok, isFalse);
+      expect(state.duelDebug?.code, 'BLE_PROXIMITY_REQUIRED');
+      expect(state.duelDebug?.distanceMeters, 17);
+      expect(state.duelDebug?.gpsFallbackUsed, isTrue);
+      expect(state.duelDebug?.freshestEvidenceAgeMs, 900);
+    });
+
+    test('stores duel debug info when accept succeeds', () async {
+      final socket = FakeFantasyWarsSocketClient()
+        ..duelAcceptResponse = const {
+          'ok': true,
+          'duelId': 'duel-9',
+          'distanceMeters': 6,
+          'duelRangeMeters': 20,
+          'bleEvidenceFreshnessMs': 12000,
+          'allowGpsFallbackWithoutBle': false,
+          'proximitySource': 'ble',
+          'bleConfirmed': true,
+          'gpsFallbackUsed': false,
+          'mutualProximity': true,
+          'recentProximityReports': 2,
+          'freshestEvidenceAgeMs': 250,
+        };
+      final container = ProviderContainer(
+        overrides: [
+          fantasyWarsSocketClientProvider.overrideWithValue(socket),
+          fantasyWarsCurrentUserIdProvider.overrideWithValue('user-1'),
+        ],
+      );
+      addTearDown(() {
+        container.dispose();
+        socket.dispose();
+      });
+
+      final notifier = container.read(fantasyWarsProvider('session-a').notifier);
+      final result = await notifier.acceptDuel('duel-9');
+
+      expect(result['ok'], isTrue);
+      final state = container.read(fantasyWarsProvider('session-a'));
+      expect(state.duelDebug?.stage, 'accept');
+      expect(state.duelDebug?.ok, isTrue);
+      expect(state.duelDebug?.distanceMeters, 6);
+      expect(state.duelDebug?.bleConfirmed, isTrue);
+      expect(state.duelDebug?.mutualProximity, isTrue);
+      expect(state.duelDebug?.recentProximityReports, 2);
+    });
+
+    test('stores invalidation reason in duel debug info', () async {
+      final socket = FakeFantasyWarsSocketClient();
+      final container = ProviderContainer(
+        overrides: [
+          fantasyWarsSocketClientProvider.overrideWithValue(socket),
+          fantasyWarsCurrentUserIdProvider.overrideWithValue('user-1'),
+        ],
+      );
+      addTearDown(() {
+        container.dispose();
+        socket.dispose();
+      });
+
+      container.read(fantasyWarsProvider('session-a'));
+      socket.emitDuelInvalidated({
+        'duelId': 'duel-4',
+        'reason': 'TARGET_OUT_OF_RANGE',
+      });
+      await _flush();
+
+      final state = container.read(fantasyWarsProvider('session-a'));
+      expect(state.duel.phase, 'invalidated');
+      expect(state.duel.duelResult?.reason, 'invalidated');
+      expect(state.duelDebug?.stage, 'invalidated');
+      expect(state.duelDebug?.ok, isFalse);
+      expect(state.duelDebug?.code, 'TARGET_OUT_OF_RANGE');
     });
   });
 }

@@ -3,6 +3,7 @@ import { query, withTransaction } from '../config/database.js';
 import { setCache, getCache, delCache, delPattern } from '../config/redis.js';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
+import { normalizeFantasyWarsDuelSettings } from '../game/plugins/fantasy_wars_artifact/sessionConfig.js';
 
 const SESSION_CODE_LENGTH = 6;
 const FANTASY_WARS_GAME_TYPE = 'fantasy_wars_artifact';
@@ -112,9 +113,11 @@ const normalizeFantasyWarsTeam = (team, index = 0) => {
 const buildFantasyWarsGameConfig = (gameConfig = {}) => {
   const teamCount = clampTeamCount(gameConfig.teamCount);
   const teams = buildFantasyWarsTeams(teamCount);
+  const duelSettings = normalizeFantasyWarsDuelSettings(gameConfig);
 
   return {
     ...gameConfig,
+    ...duelSettings,
     teamCount,
     controlPointCount: Number.isFinite(Number(gameConfig.controlPointCount))
       ? Math.max(1, Math.trunc(Number(gameConfig.controlPointCount)))
@@ -607,6 +610,44 @@ export const setFantasyWarsLayout = async (
   return rows[0];
 };
 
+export const updateFantasyWarsDuelConfig = async (
+  requesterId,
+  sessionId,
+  updates = {},
+) => {
+  const session = await getSession(sessionId);
+  if (!session || session.host_user_id !== requesterId) {
+    throw new Error('SESSION_NOT_FOUND_OR_NOT_HOST');
+  }
+  if (!isFantasyWarsSession(session.game_type)) {
+    throw new Error('INVALID_GAME_TYPE');
+  }
+
+  const config = buildFantasyWarsGameConfig(session.game_config ?? {});
+  const nextConfig = buildFantasyWarsGameConfig({
+    ...config,
+    ...updates,
+  });
+
+  const { rows } = await query(
+    `UPDATE sessions
+     SET game_config = $1::jsonb
+     WHERE id = $2 AND host_user_id = $3
+     RETURNING id, session_code, game_config`,
+    [
+      JSON.stringify(nextConfig),
+      sessionId,
+      requesterId,
+    ]
+  );
+  if (rows.length === 0) {
+    throw new Error('SESSION_NOT_FOUND_OR_NOT_HOST');
+  }
+
+  await invalidateSessionCaches(sessionId, rows[0].session_code);
+  return rows[0];
+};
+
 export const moveMemberToTeam = async (requesterId, sessionId, targetUserId, teamId) => {
   const session = await getSession(sessionId);
   if (!session) {
@@ -639,4 +680,3 @@ export const moveMemberToTeam = async (requesterId, sessionId, targetUserId, tea
 
   return rows[0];
 };
-

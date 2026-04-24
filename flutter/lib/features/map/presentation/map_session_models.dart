@@ -45,7 +45,34 @@ class MemberState {
       );
 }
 
+class BleMemberContact {
+  final String userId;
+  final int rssi;
+  final int seenAtMs;
+  final String deviceId;
+
+  const BleMemberContact({
+    required this.userId,
+    required this.rssi,
+    required this.seenAtMs,
+    required this.deviceId,
+  });
+
+  BleMemberContact copyWith({
+    int? rssi,
+    int? seenAtMs,
+    String? deviceId,
+  }) =>
+      BleMemberContact(
+        userId: userId,
+        rssi: rssi ?? this.rssi,
+        seenAtMs: seenAtMs ?? this.seenAtMs,
+        deviceId: deviceId ?? this.deviceId,
+      );
+}
+
 class GameState {
+  final String? gameType;
   final String status;
   final int aliveCount;
   final List<String> alivePlayerIds;
@@ -55,6 +82,7 @@ class GameState {
   final int? incompleteMissionCount;
 
   const GameState({
+    this.gameType,
     this.status = 'none',
     this.aliveCount = 0,
     this.alivePlayerIds = const [],
@@ -65,6 +93,7 @@ class GameState {
   });
 
   factory GameState.fromMap(Map<String, dynamic> data) => GameState(
+        gameType: data['gameType'] as String?,
         status: data['status'] as String? ?? 'none',
         aliveCount: data['aliveCount'] as int? ?? 0,
         alivePlayerIds: (data['alivePlayerIds'] as List<dynamic>?)
@@ -80,6 +109,9 @@ class GameState {
 
 class MapSessionState {
   final Map<String, MemberState> members;
+  final Map<String, BleMemberContact> bleContacts;
+  final String blePresenceStatus;
+  final String? blePresenceMessage;
   final Position? myPosition;
   final bool isConnected;
   final bool sosTriggered;
@@ -97,6 +129,9 @@ class MapSessionState {
 
   const MapSessionState({
     required this.members,
+    this.bleContacts = const {},
+    this.blePresenceStatus = 'idle',
+    this.blePresenceMessage,
     this.myPosition,
     this.isConnected = false,
     this.hasEverConnected = false,
@@ -115,6 +150,9 @@ class MapSessionState {
 
   MapSessionState copyWith({
     Map<String, MemberState>? members,
+    Map<String, BleMemberContact>? bleContacts,
+    String? blePresenceStatus,
+    Object? blePresenceMessage = _sentinel,
     Position? myPosition,
     bool? isConnected,
     bool? hasEverConnected,
@@ -132,6 +170,11 @@ class MapSessionState {
   }) =>
       MapSessionState(
         members: members ?? this.members,
+        bleContacts: bleContacts ?? this.bleContacts,
+        blePresenceStatus: blePresenceStatus ?? this.blePresenceStatus,
+        blePresenceMessage: blePresenceMessage == _sentinel
+            ? this.blePresenceMessage
+            : blePresenceMessage as String?,
         myPosition: myPosition ?? this.myPosition,
         isConnected: isConnected ?? this.isConnected,
         hasEverConnected: hasEverConnected ?? this.hasEverConnected,

@@ -147,11 +147,15 @@ class FwWorldStatusPanel extends StatelessWidget {
     required this.myState,
     required this.dungeons,
     required this.memberLabels,
+    this.bleSummary,
+    this.duelDebugLines = const [],
   });
 
   final FwMyState myState;
   final List<FwDungeonState> dungeons;
   final Map<String, String> memberLabels;
+  final String? bleSummary;
+  final List<String> duelDebugLines;
 
   @override
   Widget build(BuildContext context) {
@@ -165,6 +169,7 @@ class FwWorldStatusPanel extends StatelessWidget {
         : memberLabels[myState.trackedTargetUserId!] ?? myState.trackedTargetUserId!;
 
     final rows = <String>[
+      if (bleSummary != null) bleSummary!,
       if (dungeon != null) '${dungeon.displayName} · ${_dungeonLabel(dungeon.status)}',
       '성유물 · $artifactLabel',
       if (myState.isRevealActive && trackedLabel != null) '추적 대상 · $trackedLabel',
@@ -205,6 +210,27 @@ class FwWorldStatusPanel extends StatelessWidget {
                 style: const TextStyle(color: Colors.white70, fontSize: 11),
               ),
               const SizedBox(height: 4),
+            ],
+            if (duelDebugLines.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Container(height: 1, color: Colors.white12),
+              const SizedBox(height: 8),
+              const Text(
+                '결투 판정',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 6),
+              for (final line in duelDebugLines) ...[
+                Text(
+                  line,
+                  style: const TextStyle(color: Colors.white70, fontSize: 11),
+                ),
+                const SizedBox(height: 4),
+              ],
             ],
           ],
         ),

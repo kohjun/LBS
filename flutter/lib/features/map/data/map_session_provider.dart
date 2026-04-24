@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 
 import '../../../core/services/background_service.dart';
+import '../../../core/services/fantasy_wars_ble_presence_service.dart';
 import '../../../core/services/mediasoup_audio_service.dart';
 import '../../../core/services/socket_service.dart';
 import '../../../core/services/location_service.dart';
@@ -33,6 +34,7 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
 
   final _socket = SocketService();
   final _audio = MediaSoupAudioService();
+  final _ble = FantasyWarsBlePresenceService();
   final _gps = GpsLocationService();
 
   StreamSubscription? _locationSub;
@@ -50,6 +52,8 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
   StreamSubscription? _playerEliminatedSub;
   StreamSubscription? _gameStateSub;
   StreamSubscription? _gameOverSub;
+  StreamSubscription? _bleSightingSub;
+  StreamSubscription? _bleStatusSub;
 
   Timer? _joinRetryTimer;
 
@@ -148,6 +152,7 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
     }
 
     _bindSocketStreams();
+    _bindBleStreams();
     _logStartupStep('restored cached state');
 
     unawaited(_bootstrapSession(prefs));
@@ -185,6 +190,7 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
 
     _gameStateSub = _socket.onGameStateUpdate.listen((data) {
       state = state.copyWith(gameState: GameState.fromMap(data));
+      unawaited(_syncBlePresenceLifecycle());
     });
 
     _gameOverSub = _socket.onGameOver.listen((data) {
@@ -194,6 +200,7 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
           winnerId: data['winnerId'] as String?,
         ),
       );
+      unawaited(_syncBlePresenceLifecycle());
     });
 
     _roleChangedSub = _socket.onRoleChanged.listen((data) {
@@ -216,6 +223,7 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
         isConnected: connected,
         hasEverConnected: connected ? true : state.hasEverConnected,
       );
+      unawaited(_syncBlePresenceLifecycle());
       if (connected) {
         _socket.joinSession(_sessionId);
         // Defer audio reconnect to avoid blocking map rendering on reconnection.
@@ -283,6 +291,7 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
         );
         state = state.copyWith(members: updated);
       }
+      unawaited(_syncBlePresenceLifecycle());
     });
 
     _memberLeftSub = _socket.onMemberLeft.listen((data) {
@@ -290,6 +299,7 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
       final updated = Map<String, MemberState>.from(state.members)
         ..remove(userId);
       state = state.copyWith(members: updated);
+      unawaited(_syncBlePresenceLifecycle());
     });
 
     _statusSub = _socket.onStatusChanged.listen((data) {
@@ -348,7 +358,55 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
         );
         _gps.setSharingEnabled(me.sharingEnabled);
       }
+      unawaited(_syncBlePresenceLifecycle());
     });
+  }
+
+  void _bindBleStreams() {
+    state = state.copyWith(
+      blePresenceStatus: _ble.status.state.name,
+      blePresenceMessage: _ble.status.message,
+    );
+
+    _bleSightingSub = _ble.sightings.listen((sighting) {
+      final updated = Map<String, BleMemberContact>.from(state.bleContacts)
+        ..[sighting.userId] = BleMemberContact(
+          userId: sighting.userId,
+          rssi: sighting.rssi,
+          seenAtMs: sighting.seenAtMs,
+          deviceId: sighting.deviceId,
+        );
+      state = state.copyWith(bleContacts: updated);
+    });
+
+    _bleStatusSub = _ble.statuses.listen((status) {
+      state = state.copyWith(
+        blePresenceStatus: status.state.name,
+        blePresenceMessage: status.message,
+      );
+    });
+  }
+
+  Future<void> _syncBlePresenceLifecycle() async {
+    final authUser = _ref.read(authProvider).valueOrNull;
+    final shouldRun = authUser != null &&
+        state.isConnected &&
+        state.gameState.status == 'in_progress' &&
+        state.gameState.gameType == 'fantasy_wars_artifact';
+
+    if (!shouldRun) {
+      await _ble.stop();
+      if (mounted && state.bleContacts.isNotEmpty) {
+        state = state.copyWith(bleContacts: const {});
+      }
+      return;
+    }
+
+    await _ble.start(
+      sessionId: _sessionId,
+      userId: authUser.id,
+      memberUserIds: state.members.keys,
+    );
   }
 
   Future<void> _startGpsTracking() async {
@@ -444,6 +502,8 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
     } catch (e) {
       debugPrint('[Map] Failed to load session members: $e');
     }
+
+    unawaited(_syncBlePresenceLifecycle());
   }
 
   static double _haversineMeters(
@@ -561,6 +621,7 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
       if (_socket.isConnected) {
         state = state.copyWith(isConnected: true, hasEverConnected: true);
         _socket.joinSession(_sessionId);
+        unawaited(_syncBlePresenceLifecycle());
       }
     } catch (e) {
       debugPrint('[Map] Socket reconnect failed: $e');
@@ -586,8 +647,11 @@ class MapSessionNotifier extends StateNotifier<MapSessionState> {
     _playerEliminatedSub?.cancel();
     _gameStateSub?.cancel();
     _gameOverSub?.cancel();
+    _bleSightingSub?.cancel();
+    _bleStatusSub?.cancel();
     _gps.setSessionId(null);
     _gps.stopTracking();
+    unawaited(_ble.stop());
     unawaited(_audio.leaveSession());
     _socket.disconnect();
     SharedPreferences.getInstance().then((p) => p.setBool('bg_active', false));

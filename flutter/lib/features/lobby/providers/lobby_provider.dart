@@ -9,6 +9,16 @@ import '../../../core/services/mediasoup_audio_service.dart';
 import '../../../core/services/socket_service.dart';
 import '../../home/data/session_repository.dart';
 
+class LobbyStartGameException implements Exception {
+  const LobbyStartGameException({
+    required this.code,
+    this.details = const <String, dynamic>{},
+  });
+
+  final String code;
+  final Map<String, dynamic> details;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 로비 상태
 // ─────────────────────────────────────────────────────────────────────────────
@@ -219,6 +229,13 @@ class LobbyNotifier extends StateNotifier<LobbyState> {
       }
 
       if (state.isGameStarted) return;
+      final data = error.response?.data;
+      if (data is Map<String, dynamic> && data['error'] is String) {
+        throw LobbyStartGameException(
+          code: data['error'] as String,
+          details: Map<String, dynamic>.from(data),
+        );
+      }
       rethrow;
     } catch (e) {
       debugPrint('[Lobby] startGame failed: $e');
@@ -236,6 +253,24 @@ class LobbyNotifier extends StateNotifier<LobbyState> {
     await _ref
         .read(sessionRepositoryProvider)
         .moveMemberToTeam(_sessionId, userId, teamId);
+  }
+
+  Future<void> updateFantasyWarsDuelConfig({
+    bool? allowGpsFallbackWithoutBle,
+    int? bleEvidenceFreshnessMs,
+  }) async {
+    final session = await _ref.read(sessionRepositoryProvider).updateFantasyWarsDuelConfig(
+          _sessionId,
+          allowGpsFallbackWithoutBle: allowGpsFallbackWithoutBle,
+          bleEvidenceFreshnessMs: bleEvidenceFreshnessMs,
+        );
+    if (!mounted) {
+      return;
+    }
+    state = state.copyWith(
+      sessionInfo: session,
+      members: session.members,
+    );
   }
 
   Future<void> releaseRealtimeResources({

@@ -10,9 +10,9 @@ const DUNGEON_REVIVE_INTERVAL_MS = 60_000;
 const dungeonTimers = new Map();
 
 // ── calcReviveChance ──────────────────────────────────────────────────────────
-// Pure: base + step * attempts, capped at 1.0
-export function calcReviveChance(reviveAttempts, baseChance, stepChance) {
-  return Math.min(1.0, baseChance + reviveAttempts * stepChance);
+// Pure: base + step * attempts, capped at reviveMaxChance.
+export function calcReviveChance(reviveAttempts, baseChance, stepChance, maxChance = 0.8) {
+  return Math.min(maxChance, baseChance + reviveAttempts * stepChance);
 }
 
 // ── scheduleDungeonRevive ─────────────────────────────────────────────────────

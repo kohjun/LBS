@@ -47,6 +47,14 @@ const fantasyWarsLayoutSchema = z.object({
   })).min(1),
 });
 
+const fantasyWarsDuelConfigSchema = z.object({
+  allowGpsFallbackWithoutBle: z.boolean().optional(),
+  bleEvidenceFreshnessMs: z.number().int().min(2000).max(60000).optional(),
+}).refine(
+  (value) => Object.keys(value).length > 0,
+  { message: 'EMPTY_DUEL_CONFIG' },
+);
+
 // [Task 5] settings 중첩 객체를 최상위 필드로 병합 (기존 최상위 값이 우선)
 const normalizeCreateSessionBody = (body = {}) => {
   const { settings, ...rest } = body;
@@ -187,6 +195,32 @@ export default async function sessionRoutes(fastify) {
         INVALID_POLYGON: 400,
         INVALID_CONTROL_POINTS: 400,
         INVALID_SPAWN_ZONES: 400,
+      };
+      return reply.code(errorMap[err.message] || 500).send({ error: err.message });
+    }
+  });
+
+  fastify.patch('/:sessionId/fantasy-wars-duel-config', async (request, reply) => {
+    const { sessionId } = request.params;
+    const parsed = fantasyWarsDuelConfigSchema.safeParse(request.body || {});
+
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'INVALID_DUEL_CONFIG' });
+    }
+
+    try {
+      const result = await sessionService.updateFantasyWarsDuelConfig(
+        request.user.id,
+        sessionId,
+        parsed.data,
+      );
+      return reply.send({
+        gameConfig: result.game_config,
+      });
+    } catch (err) {
+      const errorMap = {
+        SESSION_NOT_FOUND_OR_NOT_HOST: 403,
+        INVALID_GAME_TYPE: 400,
       };
       return reply.code(errorMap[err.message] || 500).send({ error: err.message });
     }
@@ -429,12 +463,18 @@ export default async function sessionRoutes(fastify) {
         });
       }
       if (
+        err.message === 'FANTASY_WARS_NOT_ENOUGH_PLAYERS' ||
+        err.message === 'FANTASY_WARS_TEAM_ASSIGNMENT_REQUIRED' ||
+        err.message === 'FANTASY_WARS_TEAM_SIZE_TOO_SMALL' ||
         err.message === 'FANTASY_WARS_PLAYABLE_AREA_REQUIRED' ||
         err.message === 'FANTASY_WARS_CONTROL_POINTS_REQUIRED' ||
         err.message === 'FANTASY_WARS_SPAWN_ZONES_REQUIRED' ||
         err.message === 'CONTROL_POINT_LOCATIONS_REQUIRED'
       ) {
-        return reply.code(400).send({ error: err.message });
+        return reply.code(400).send({
+          error: err.message,
+          ...(err.details ?? {}),
+        });
       }
       throw err;
     }

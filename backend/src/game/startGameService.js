@@ -5,6 +5,7 @@ import * as AIDirector from '../ai/AIDirector.js';
 import { getMediaServer } from '../media/MediaServer.js';
 import { GamePluginRegistry } from './index.js';
 import { keys } from '../websocket/socketRuntime.js';
+import { validateFantasyWarsStart } from './plugins/fantasy_wars_artifact/startValidation.js';
 
 const GAME_TTL = 86400;
 
@@ -108,6 +109,7 @@ export const startGameForSession = async ({ io, sessionId, requesterUserId }) =>
 
   if (gameType === 'fantasy_wars_artifact') {
     assertFantasyWarsLayoutReady(session, config);
+    validateFantasyWarsStart(aliveMembers, config);
   }
 
   // ── plugin.startSession ───────────────────────────────────────────────────

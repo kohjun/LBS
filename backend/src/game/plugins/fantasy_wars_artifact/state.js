@@ -162,6 +162,7 @@ export function buildInitialPluginState(members, config, session = null) {
     playerStates,
     captureIntents: {},
     eliminatedPlayerIds: [],
+    pendingVictory: null,
     winCondition: null,
     _config: config,
   };

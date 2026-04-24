@@ -13,7 +13,7 @@ class FantasyWarsUiPlugin implements GameUiPlugin {
   String get displayName => '판타지 워즈: 성유물 쟁탈전';
 
   @override
-  int get minPlayers => 3;
+  int get minPlayers => 9;
 
   @override
   Widget buildScreen(BuildContext context, String sessionId) {

@@ -464,7 +464,8 @@ class SocketService {
       ..on(fwDuelResult,
           (data) => _fwDuelResultController.add(_toMap(data)))
       ..on(fwDuelInvalidated,
-          (data) => _fwDuelInvalidatedController.add(_toMap(data)));
+          (data) => _fwDuelInvalidatedController.add(_toMap(data)))
+      ..on(fwDuelLog, (data) => _emitGameEvent(fwDuelLog, data));
   }
 
   static Map<String, dynamic> _toMap(dynamic data) =>
@@ -771,6 +772,7 @@ class SocketService {
   static const String fwDuelStarted     = 'fw:duel:started';
   static const String fwDuelResult      = 'fw:duel:result';
   static const String fwDuelInvalidated = 'fw:duel:invalidated';
+  static const String fwDuelLog         = 'fw:duel_log';
 
   // ─────────────────────────────────────────────────────────────────────────
   // 게임 이벤트 상수 (Among Us 플러그인)
@@ -931,16 +933,24 @@ class SocketService {
 
   Future<Map<String, dynamic>> sendDuelChallenge(
     String sessionId,
-    String targetUserId,
+    String targetUserId, {
+    Map<String, dynamic>? proximity,
   ) {
     return emitWithAck(fwDuelChallenge, {
-      'sessionId':    sessionId,
+      'sessionId': sessionId,
       'targetUserId': targetUserId,
+      if (proximity != null) 'proximity': proximity,
     });
   }
 
-  Future<Map<String, dynamic>> sendDuelAccept(String duelId) =>
-      emitWithAck(fwDuelAccept, {'duelId': duelId});
+  Future<Map<String, dynamic>> sendDuelAccept(
+    String duelId, {
+    Map<String, dynamic>? proximity,
+  }) =>
+      emitWithAck(fwDuelAccept, {
+        'duelId': duelId,
+        if (proximity != null) 'proximity': proximity,
+      });
 
   Future<Map<String, dynamic>> sendDuelReject(String duelId) =>
       emitWithAck(fwDuelReject, {'duelId': duelId});

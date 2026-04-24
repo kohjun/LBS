@@ -7,10 +7,11 @@ import {
 } from '../../src/game/plugins/fantasy_wars_artifact/revive.js';
 import { makeGameState, makePlayer } from '../../testing/fantasy_wars/helpers.js';
 
-test('calcReviveChance uses base chance, increases by step, and caps at 1.0', () => {
+test('calcReviveChance uses base chance, increases by step, and caps at 0.8 by default', () => {
   assert.equal(calcReviveChance(0, 0.3, 0.1), 0.3);
   assert.equal(calcReviveChance(2, 0.3, 0.1), 0.5);
-  assert.equal(calcReviveChance(20, 0.3, 0.1), 1.0);
+  assert.equal(calcReviveChance(20, 0.3, 0.1), 0.8);
+  assert.equal(calcReviveChance(20, 0.3, 0.1, 0.7), 0.7);
 });
 
 test('applyReviveSuccess restores warrior state and removes elimination markers', () => {

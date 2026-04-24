@@ -21,7 +21,7 @@ import {
   cancelDungeonTimer,
   applyReviveSuccess,
 } from './revive.js';
-import { defaultConfig } from './schema.js';
+import { defaultConfig, resolveDuelConfig } from './schema.js';
 import {
   findControlPointById,
   clearCaptureIntents,
@@ -30,8 +30,75 @@ import {
   cancelCaptureForPlayer,
 } from './captureState.js';
 import { clearDuelState, resolveCombatBetweenPlayers } from './duelResolution.js';
+import {
+  checkWinCondition as evaluateWinCondition,
+  syncPendingMajorityVictory,
+} from './winConditions.js';
 import * as AIDirector from '../../../ai/AIDirector.js';
 import { getSessionSnapshot, haversineMeters } from '../../../services/locationService.js';
+
+const majorityHoldTimers = new Map();
+
+function clearMajorityHoldTimer(sessionId) {
+  const timer = majorityHoldTimers.get(sessionId);
+  if (timer) {
+    clearTimeout(timer);
+    majorityHoldTimers.delete(sessionId);
+  }
+}
+
+function finalizeWin(gameState, win, io, sessionId) {
+  const ps = gameState.pluginState ?? {};
+  ps.winCondition = win;
+  ps.pendingVictory = null;
+  gameState.status = 'finished';
+  gameState.finishedAt = Date.now();
+
+  io.to(`session:${sessionId}`).emit('game:over', {
+    winner: win.winner,
+    reason: win.reason,
+  });
+
+  AIDirector.fwOnGameEnd(
+    { roomId: sessionId, pluginState: ps },
+    win.winner,
+    win.reason ?? 'territory',
+  ).then((message) => {
+    if (message) {
+      io.to(`session:${sessionId}`).emit('game:ai_message', {
+        type: 'announcement',
+        message,
+      });
+    }
+  }).catch(() => {});
+}
+
+function scheduleMajorityHoldTimer({ sessionId, io, readState, saveState, pendingVictory }) {
+  clearMajorityHoldTimer(sessionId);
+  if (!pendingVictory?.holdUntil) {
+    return;
+  }
+
+  const delayMs = Math.max(0, pendingVictory.holdUntil - Date.now());
+  const timer = setTimeout(async () => {
+    majorityHoldTimers.delete(sessionId);
+
+    const fresh = await readState();
+    if (!fresh || fresh.status === 'finished') {
+      return;
+    }
+
+    const win = checkWinCondition(fresh, cfg(fresh.pluginState ?? {}));
+    if (!win || win.reason !== 'control_point_majority') {
+      return;
+    }
+
+    finalizeWin(fresh, win, io, sessionId);
+    await saveState(fresh);
+  }, delayMs);
+
+  majorityHoldTimers.set(sessionId, timer);
+}
 
 export function getPublicState(gameState) {
   const ps = gameState.pluginState ?? {};
@@ -91,11 +158,15 @@ export function getPublicState(gameState) {
     color: zone.color ?? null,
     polygonPoints: Array.isArray(zone.polygonPoints) ? zone.polygonPoints : [],
   }));
+  const duelConfig = resolveDuelConfig(config);
 
   return {
     status: gameState.status,
     startedAt: gameState.startedAt,
     finishedAt: gameState.finishedAt,
+    duelRangeMeters: duelConfig.duelRangeMeters,
+    bleEvidenceFreshnessMs: duelConfig.bleEvidenceFreshnessMs,
+    allowGpsFallbackWithoutBle: duelConfig.allowGpsFallbackWithoutBle,
     aliveCount: gameState.alivePlayerIds.length,
     alivePlayerIds: gameState.alivePlayerIds,
     eliminatedPlayerIds: ps.eliminatedPlayerIds ?? [],
@@ -122,6 +193,7 @@ export function getPrivateState(gameState, userId) {
       player.reviveAttempts ?? 0,
       config.reviveBaseChance ?? 0.3,
       config.reviveStepChance ?? 0.1,
+      config.reviveMaxChance ?? 0.8,
     )
     : null;
 
@@ -149,57 +221,7 @@ export function getPrivateState(gameState, userId) {
 }
 
 export function checkWinCondition(gameState, config = {}) {
-  const ps = gameState.pluginState ?? {};
-  if (!ps.guilds || !ps.controlPoints) {
-    return null;
-  }
-
-  const controlPointCount = config.controlPointCount ?? 5;
-  const winByMasterElim = config.winByMasterElim ?? true;
-  const winByMajority = config.winByMajority ?? false;
-  const winThreshold = winByMajority
-    ? 1
-    : Math.floor(controlPointCount / 2) + 1;
-
-  const guildIds = Object.keys(ps.guilds);
-  const cpCounts = {};
-  guildIds.forEach((guildId) => {
-    cpCounts[guildId] = 0;
-  });
-
-  (ps.controlPoints ?? []).forEach((cp) => {
-    if (cp.capturedBy && cpCounts[cp.capturedBy] !== undefined) {
-      cpCounts[cp.capturedBy] += 1;
-    }
-  });
-
-  for (const guildId of guildIds) {
-    if (cpCounts[guildId] >= winThreshold) {
-      return { winner: guildId, reason: 'control_point_majority' };
-    }
-  }
-
-  if (winByMasterElim) {
-    const eliminated = new Set(ps.eliminatedPlayerIds ?? []);
-    const aliveGuilds = guildIds.filter((guildId) => {
-      const masterId = ps.guilds[guildId]?.guildMasterId;
-      return masterId && !eliminated.has(masterId);
-    });
-
-    if (aliveGuilds.length === 1) {
-      return { winner: aliveGuilds[0], reason: 'guild_master_eliminated' };
-    }
-    if (aliveGuilds.length === 0 && guildIds.length > 0) {
-      const winner = guildIds.reduce((best, guildId) => {
-        const nextScore = ps.guilds[guildId]?.score ?? 0;
-        const bestScore = ps.guilds[best]?.score ?? 0;
-        return nextScore >= bestScore ? guildId : best;
-      }, guildIds[0]);
-      return { winner, reason: 'last_standing_by_score' };
-    }
-  }
-
-  return null;
+  return evaluateWinCondition(gameState, config);
 }
 
 export async function handleEvent(eventName, payload, ctx) {
@@ -333,24 +355,8 @@ function broadcastWinIfDone(gameState, io, sessionId) {
     return false;
   }
 
-  ps.winCondition = win;
-  gameState.status = 'finished';
-  gameState.finishedAt = Date.now();
-  io.to(`session:${sessionId}`).emit('game:over', { winner: win.winner, reason: win.reason });
-
-  AIDirector.fwOnGameEnd(
-    { roomId: sessionId, pluginState: ps },
-    win.winner,
-    win.reason ?? 'territory',
-  ).then((message) => {
-    if (message) {
-      io.to(`session:${sessionId}`).emit('game:ai_message', {
-        type: 'announcement',
-        message,
-      });
-    }
-  }).catch(() => {});
-
+  clearMajorityHoldTimer(sessionId);
+  finalizeWin(gameState, win, io, sessionId);
   return true;
 }
 
@@ -519,6 +525,19 @@ async function handleCaptureStart({ controlPointId }, ctx) {
 
     clearCaptureZoneForControlPoint(freshPluginState, controlPointId, captureGuildId);
     clearCaptureIntents(freshPluginState, controlPointId);
+    const pendingVictory = syncPendingMajorityVictory(fresh, cfg(freshPluginState));
+
+    if (pendingVictory) {
+      scheduleMajorityHoldTimer({
+        sessionId,
+        io,
+        readState,
+        saveState,
+        pendingVictory,
+      });
+    } else {
+      clearMajorityHoldTimer(sessionId);
+    }
 
     const won = broadcastWinIfDone(fresh, io, sessionId);
     await saveState(fresh);
@@ -706,6 +725,7 @@ function scheduleDungeonAttempt(timerKey, userId, sessionId, config, readState, 
       player.reviveAttempts,
       currentConfig.reviveBaseChance ?? 0.3,
       currentConfig.reviveStepChance ?? 0.1,
+      currentConfig.reviveMaxChance ?? 0.8,
     );
     player.reviveAttempts += 1;
 
@@ -724,7 +744,12 @@ function scheduleDungeonAttempt(timerKey, userId, sessionId, config, readState, 
     io.to(`session:${sessionId}`).emit('fw:revive_failed', {
       targetUserId: userId,
       attemptedBy: 'dungeon',
-      nextChance: Math.min(1.0, chance + (currentConfig.reviveStepChance ?? 0.1)),
+      nextChance: calcReviveChance(
+        player.reviveAttempts,
+        currentConfig.reviveBaseChance ?? 0.3,
+        currentConfig.reviveStepChance ?? 0.1,
+        currentConfig.reviveMaxChance ?? 0.8,
+      ),
     });
 
     if (player.dungeonEnteredAt) {

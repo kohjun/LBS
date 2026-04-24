@@ -1,7 +1,12 @@
 'use strict';
 
 import crypto from 'crypto';
-import { pickMinigame, generateMinigameParams, judgeMinigame } from './DuelMinigames.js';
+import {
+  pickMinigame,
+  generateMinigameParams,
+  buildPublicMinigameParams,
+  judgeMinigame,
+} from './FantasyWarsMinigames.js';
 
 const CHALLENGE_TIMEOUT_MS = 15_000;
 const GAME_TIMEOUT_MS = 30_000;
@@ -10,7 +15,7 @@ const activeDuels = new Map();
 const playerDuelMap = new Map();
 
 class DuelService {
-  challenge({ challengerId, targetId, sessionId, transport, onResolve }) {
+  challenge({ challengerId, targetId, sessionId, transport, onResolve, onInvalidate }) {
     if (!challengerId || !targetId || !sessionId) {
       return { ok: false, error: 'MISSING_FIELDS' };
     }
@@ -39,6 +44,7 @@ class DuelService {
       startedAt: null,
       resolvedAt: null,
       onResolve,
+      onInvalidate,
       _transport: transport,
       _challengeTimer: null,
       _gameTimer: null,
@@ -81,7 +87,11 @@ class DuelService {
     clearTimeout(record._challengeTimer);
 
     const minigameType = pickMinigame(record.seed);
-    const params = generateMinigameParams(minigameType, record.seed);
+    const params = generateMinigameParams(
+      minigameType,
+      record.seed,
+      [record.challengerId, record.targetId],
+    );
     record.status = 'in_game';
     record.startedAt = Date.now();
     record.minigameType = minigameType;
@@ -95,13 +105,18 @@ class DuelService {
     const startPayload = {
       duelId,
       minigameType,
-      params,
       gameTimeoutMs: GAME_TIMEOUT_MS,
       startedAt: record.startedAt,
     };
 
-    record._transport.sendToUser(record.challengerId, 'fw:duel:started', startPayload);
-    record._transport.sendToUser(record.targetId, 'fw:duel:started', startPayload);
+    record._transport.sendToUser(record.challengerId, 'fw:duel:started', {
+      ...startPayload,
+      params: buildPublicMinigameParams(minigameType, params, record.challengerId),
+    });
+    record._transport.sendToUser(record.targetId, 'fw:duel:started', {
+      ...startPayload,
+      params: buildPublicMinigameParams(minigameType, params, record.targetId),
+    });
     record._transport.sendToSession(record.sessionId, 'fw:duel:accepted', {
       duelId,
       challengerId: record.challengerId,
@@ -319,6 +334,19 @@ class DuelService {
 
     record._transport.sendToUser(record.challengerId, 'fw:duel:invalidated', { duelId, reason });
     record._transport.sendToUser(record.targetId, 'fw:duel:invalidated', { duelId, reason });
+    if (record.onInvalidate) {
+      Promise.resolve(
+        record.onInvalidate({
+          duelId,
+          sessionId: record.sessionId,
+          challengerId: record.challengerId,
+          targetId: record.targetId,
+          reason,
+        }),
+      ).catch((err) => {
+        console.error('[Duel] onInvalidate error:', err);
+      });
+    }
 
     this._close(record, 'invalidated');
     console.log(`[Duel] invalidated duelId=${duelId} reason=${reason}`);

@@ -4,6 +4,11 @@ import { EVENTS } from '../socketProtocol.js';
 import { readGameState, saveGameState } from '../socketRuntime.js';
 import { duelService } from '../../game/duel/DuelService.js';
 import { SocketTransportAdapter } from '../../game/duel/TransportAdapter.js';
+import { resolveDuelConfig } from '../../game/plugins/fantasy_wars_artifact/schema.js';
+import {
+  getPairProximityEvidence,
+  recordProximityPayload,
+} from '../../game/duel/ProximityEvidence.js';
 import * as AIDirector from '../../ai/AIDirector.js';
 import { getSessionSnapshot, haversineMeters } from '../../services/locationService.js';
 import { cancelCaptureForPlayer } from '../../game/plugins/fantasy_wars_artifact/captureState.js';
@@ -37,6 +42,92 @@ function emitPluginStateUpdate(io, sessionId, gameState, plugin, userIds = []) {
   }
 }
 
+function getFantasyWarsPlayerLabel(gameState, userId) {
+  if (!userId) {
+    return 'unknown player';
+  }
+  const nickname = gameState?.pluginState?.playerStates?.[userId]?.nickname;
+  return nickname || userId;
+}
+
+function buildFantasyWarsDuelLog(gameState, {
+  stage,
+  duelId,
+  challengerId,
+  targetId,
+  winnerId,
+  loserId,
+  minigameType,
+  reason,
+}) {
+  const challengerLabel = getFantasyWarsPlayerLabel(gameState, challengerId);
+  const targetLabel = getFantasyWarsPlayerLabel(gameState, targetId);
+  const winnerLabel = getFantasyWarsPlayerLabel(gameState, winnerId);
+  const loserLabel = getFantasyWarsPlayerLabel(gameState, loserId);
+
+  let message = `Duel | ${stage}`;
+  switch (stage) {
+    case 'challenged':
+      message = `Duel challenged | ${challengerLabel} vs ${targetLabel}`;
+      break;
+    case 'started':
+      message =
+        `Duel started | ${challengerLabel} vs ${targetLabel}` +
+        (minigameType ? ` | ${minigameType}` : '');
+      break;
+    case 'rejected':
+      message = `Duel rejected | ${challengerLabel} vs ${targetLabel}`;
+      break;
+    case 'cancelled':
+      message = `Duel cancelled | ${challengerLabel} vs ${targetLabel}`;
+      break;
+    case 'invalidated':
+      message =
+        `Duel invalidated | ${challengerLabel} vs ${targetLabel}` +
+        (reason ? ` | ${reason}` : '');
+      break;
+    case 'resolved':
+      message = winnerId && loserId
+        ? `Duel resolved | ${winnerLabel} beat ${loserLabel}` +
+            (reason ? ` | ${reason}` : '')
+        : `Duel resolved | draw` + (reason ? ` | ${reason}` : '');
+      break;
+  }
+
+  return {
+    kind: 'duel',
+    stage,
+    duelId,
+    challengerId,
+    targetId,
+    winnerId,
+    loserId,
+    minigameType: minigameType ?? null,
+    reason: reason ?? null,
+    message,
+    recordedAt: Date.now(),
+  };
+}
+
+function emitFantasyWarsDuelLog(io, sessionId, payload) {
+  io.to(`session:${sessionId}`).emit(EVENTS.FW_DUEL_LOG, payload);
+}
+
+function buildProximityDebugPayload(proximity, now) {
+  const freshestReport = proximity.reports?.[0] ?? null;
+  return {
+    proximitySource: proximity.bestSource,
+    bleConfirmed: proximity.bestSource === 'ble',
+    gpsFallbackUsed: proximity.bestSource === 'gps_fallback',
+    mutualProximity: proximity.mutual,
+    recentProximityReports: proximity.reports?.length ?? 0,
+    freshestEvidenceAgeMs:
+      freshestReport && typeof freshestReport.seenAt === 'number'
+        ? Math.max(0, Math.round(now - freshestReport.seenAt))
+        : null,
+  };
+}
+
 async function validateFantasyWarsDuelPair(sessionId, challengerId, targetId) {
   const gameState = await readGameState(sessionId);
   if (!gameState) {
@@ -57,8 +148,11 @@ async function validateFantasyWarsDuelPair(sessionId, challengerId, targetId) {
   }
 
   const config = ps._config ?? {};
-  const freshnessMs = config.locationFreshnessMs ?? 45_000;
-  const duelRangeMeters = config.duelRangeMeters ?? 20;
+  const duelConfig = resolveDuelConfig(config);
+  const freshnessMs = duelConfig.locationFreshnessMs;
+  const duelRangeMeters = duelConfig.duelRangeMeters;
+  const bleEvidenceFreshnessMs = duelConfig.bleEvidenceFreshnessMs;
+  const allowGpsFallbackWithoutBle = duelConfig.allowGpsFallbackWithoutBle;
   const now = Date.now();
   const snapshot = await getSessionSnapshot(sessionId, [challengerId, targetId]);
   const challengerLocation = snapshot[challengerId];
@@ -91,12 +185,39 @@ async function validateFantasyWarsDuelPair(sessionId, challengerId, targetId) {
     };
   }
 
+  const proximity = getPairProximityEvidence(
+    sessionId,
+    challengerId,
+    targetId,
+    {
+      freshnessMs: bleEvidenceFreshnessMs,
+      now,
+    },
+  );
+  const proximityDebug = buildProximityDebugPayload(proximity, now);
+  const { bleConfirmed, gpsFallbackUsed } = proximityDebug;
+  if (!bleConfirmed && !(allowGpsFallbackWithoutBle && gpsFallbackUsed)) {
+    return {
+      ok: false,
+      error: 'BLE_PROXIMITY_REQUIRED',
+      distanceMeters: Math.round(distanceMeters),
+      duelRangeMeters,
+      bleEvidenceFreshnessMs,
+      allowGpsFallbackWithoutBle,
+      ...proximityDebug,
+    };
+  }
+
   return {
     ok: true,
     gameState,
     challenger,
     target,
     distanceMeters: Math.round(distanceMeters),
+    duelRangeMeters,
+    bleEvidenceFreshnessMs,
+    allowGpsFallbackWithoutBle,
+    ...proximityDebug,
   };
 }
 
@@ -251,8 +372,21 @@ export const registerGameHandlers = ({ io, socket, mediaServer, userId }) => {
 
   const transport = new SocketTransportAdapter(io);
 
-  const onDuelResolve = async ({ winnerId, loserId, sessionId: sid, reason, minigameType }) => {
+  const onDuelResolve = async ({ duelId, winnerId, loserId, sessionId: sid, reason, minigameType }) => {
     if (!winnerId || !loserId) {
+      const logState = await readGameState(sid);
+      emitFantasyWarsDuelLog(
+        io,
+        sid,
+        buildFantasyWarsDuelLog(logState, {
+          stage: 'resolved',
+          duelId,
+          winnerId,
+          loserId,
+          minigameType,
+          reason,
+        }),
+      );
       AIDirector.fwOnDuelDraw({ roomId: sid }, minigameType ?? '?').then((message) => {
         if (message) {
           io.to(`session:${sid}`).emit('game:ai_message', {
@@ -296,6 +430,9 @@ export const registerGameHandlers = ({ io, socket, mediaServer, userId }) => {
       effects: {},
       eliminated: false,
     };
+    const resolvedWinnerId = resolution?.verdict?.winner ?? winnerId;
+    const resolvedLoserId = resolution?.verdict?.loser ?? loserId;
+    const resolvedReason = resolution?.verdict?.reason ?? reason;
 
     const win = plugin.checkWinCondition?.(gs);
     if (win) {
@@ -306,6 +443,20 @@ export const registerGameHandlers = ({ io, socket, mediaServer, userId }) => {
 
     await saveGameState(sid, gs);
     emitPluginStateUpdate(io, sid, gs, plugin, [winnerId, loserId]);
+    emitFantasyWarsDuelLog(
+      io,
+      sid,
+      buildFantasyWarsDuelLog(gs, {
+        stage: 'resolved',
+        duelId,
+        challengerId: resolvedWinnerId,
+        targetId: resolvedLoserId,
+        winnerId: resolvedWinnerId,
+        loserId: resolvedLoserId,
+        minigameType,
+        reason: resolvedReason,
+      }),
+    );
 
     if (resolution.eliminated) {
       io.to(`session:${sid}`).emit('fw:player_eliminated', {
@@ -362,6 +513,13 @@ export const registerGameHandlers = ({ io, socket, mediaServer, userId }) => {
       return;
     }
 
+    recordProximityPayload({
+      sessionId,
+      observerId: userId,
+      expectedTargetId: targetId,
+      proximity: payload?.proximity,
+    });
+
     const validation = await validateFantasyWarsDuelPair(sessionId, userId, targetId);
     if (!validation.ok) {
       respond(validation);
@@ -374,8 +532,47 @@ export const registerGameHandlers = ({ io, socket, mediaServer, userId }) => {
       sessionId,
       transport,
       onResolve: (args) => onDuelResolve({ ...args, sessionId }),
+      onInvalidate: async (args) => {
+        const logState = await readGameState(sessionId);
+        emitFantasyWarsDuelLog(
+          io,
+          sessionId,
+          buildFantasyWarsDuelLog(logState, {
+            stage: 'invalidated',
+            duelId: args.duelId,
+            challengerId: args.challengerId,
+            targetId: args.targetId,
+            reason: args.reason,
+          }),
+        );
+      },
     });
-    respond(result);
+    if (result.ok) {
+      const logState = await readGameState(sessionId);
+      emitFantasyWarsDuelLog(
+        io,
+        sessionId,
+        buildFantasyWarsDuelLog(logState, {
+          stage: 'challenged',
+          duelId: result.duelId,
+          challengerId: userId,
+          targetId,
+        }),
+      );
+    }
+    respond({
+      ...result,
+      distanceMeters: validation.distanceMeters,
+      proximitySource: validation.proximitySource,
+      bleConfirmed: validation.bleConfirmed,
+      gpsFallbackUsed: validation.gpsFallbackUsed,
+      mutualProximity: validation.mutualProximity,
+      recentProximityReports: validation.recentProximityReports,
+      freshestEvidenceAgeMs: validation.freshestEvidenceAgeMs,
+      duelRangeMeters: validation.duelRangeMeters,
+      bleEvidenceFreshnessMs: validation.bleEvidenceFreshnessMs,
+      allowGpsFallbackWithoutBle: validation.allowGpsFallbackWithoutBle,
+    });
   });
 
   socket.on(EVENTS.FW_DUEL_ACCEPT, async (payload, cb) => {
@@ -391,6 +588,13 @@ export const registerGameHandlers = ({ io, socket, mediaServer, userId }) => {
       respond({ ok: false, error: 'DUEL_NOT_PENDING' });
       return;
     }
+
+    recordProximityPayload({
+      sessionId: duel.sessionId,
+      observerId: userId,
+      expectedTargetId: duel.challengerId,
+      proximity: payload?.proximity,
+    });
 
     const validation = await validateFantasyWarsDuelPair(
       duel.sessionId,
@@ -412,28 +616,82 @@ export const registerGameHandlers = ({ io, socket, mediaServer, userId }) => {
         true,
         (result.startedAt ?? Date.now()) + (result.gameTimeoutMs ?? 30_000),
       );
+      const logState = await readGameState(duel.sessionId);
+      emitFantasyWarsDuelLog(
+        io,
+        duel.sessionId,
+        buildFantasyWarsDuelLog(logState, {
+          stage: 'started',
+          duelId,
+          challengerId: duel.challengerId,
+          targetId: duel.targetId,
+          minigameType: duel.minigameType,
+        }),
+      );
+    }
+    respond({
+      ...result,
+      distanceMeters: validation.distanceMeters,
+      proximitySource: validation.proximitySource,
+      bleConfirmed: validation.bleConfirmed,
+      gpsFallbackUsed: validation.gpsFallbackUsed,
+      mutualProximity: validation.mutualProximity,
+      recentProximityReports: validation.recentProximityReports,
+      freshestEvidenceAgeMs: validation.freshestEvidenceAgeMs,
+      duelRangeMeters: validation.duelRangeMeters,
+      bleEvidenceFreshnessMs: validation.bleEvidenceFreshnessMs,
+      allowGpsFallbackWithoutBle: validation.allowGpsFallbackWithoutBle,
+    });
+  });
+
+  socket.on(EVENTS.FW_DUEL_REJECT, async (payload, cb) => {
+    const respond = typeof cb === 'function' ? cb : () => {};
+    const { duelId } = payload ?? {};
+    if (!duelId) {
+      respond({ ok: false, error: 'MISSING_DUEL_ID' });
+      return;
+    }
+    const duel = duelService.getDuel(duelId);
+    const result = duelService.reject({ duelId, userId });
+    if (result.ok && duel) {
+      const logState = await readGameState(duel.sessionId);
+      emitFantasyWarsDuelLog(
+        io,
+        duel.sessionId,
+        buildFantasyWarsDuelLog(logState, {
+          stage: 'rejected',
+          duelId,
+          challengerId: duel.challengerId,
+          targetId: duel.targetId,
+        }),
+      );
     }
     respond(result);
   });
 
-  socket.on(EVENTS.FW_DUEL_REJECT, (payload, cb) => {
+  socket.on(EVENTS.FW_DUEL_CANCEL, async (payload, cb) => {
     const respond = typeof cb === 'function' ? cb : () => {};
     const { duelId } = payload ?? {};
     if (!duelId) {
       respond({ ok: false, error: 'MISSING_DUEL_ID' });
       return;
     }
-    respond(duelService.reject({ duelId, userId }));
-  });
-
-  socket.on(EVENTS.FW_DUEL_CANCEL, (payload, cb) => {
-    const respond = typeof cb === 'function' ? cb : () => {};
-    const { duelId } = payload ?? {};
-    if (!duelId) {
-      respond({ ok: false, error: 'MISSING_DUEL_ID' });
-      return;
+    const duel = duelService.getDuel(duelId);
+    const result = duelService.cancel({ duelId, userId });
+    if (result.ok && duel) {
+      const logState = await readGameState(duel.sessionId);
+      emitFantasyWarsDuelLog(
+        io,
+        duel.sessionId,
+        buildFantasyWarsDuelLog(logState, {
+          stage: 'cancelled',
+          duelId,
+          challengerId: duel.challengerId,
+          targetId: duel.targetId,
+        }),
+      );
     }
-    respond(duelService.cancel({ duelId, userId }));
+    respond(result);
   });
 
   socket.on(EVENTS.FW_DUEL_SUBMIT, async (payload, cb) => {

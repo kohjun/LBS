@@ -114,4 +114,5 @@ export const EVENTS = {
   FW_DUEL_STARTED:     'fw:duel:started',
   FW_DUEL_RESULT:      'fw:duel:result',
   FW_DUEL_INVALIDATED: 'fw:duel:invalidated',
+  FW_DUEL_LOG:         'fw:duel_log',
 };

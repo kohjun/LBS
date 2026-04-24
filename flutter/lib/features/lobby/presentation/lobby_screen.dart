@@ -1,3 +1,5 @@
+// ignore_for_file: unnecessary_brace_in_string_interps, unnecessary_string_interpolations
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -37,6 +39,7 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
   StreamSubscription? _kickedSub;
   String _countdownText = '--:--:--';
   bool _startingGame = false;
+  bool _savingFantasyWarsDuelConfig = false;
   bool _didNavigateToGame = false;
   bool _layoutSavedInThisVisit = false;
 
@@ -139,7 +142,7 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
       if (!mounted) {
         return;
       }
-      _showError('게임 시작 실패: $error');
+      _showError(_friendlyStartError(error));
     } finally {
       if (mounted) {
         setState(() => _startingGame = false);
@@ -163,6 +166,36 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
     await ref.read(lobbyProvider(widget.sessionId).notifier).refresh();
   }
 
+  Future<void> _updateFantasyWarsDuelConfig({
+    bool? bleRequired,
+    int? bleEvidenceFreshnessMs,
+  }) async {
+    if (_savingFantasyWarsDuelConfig ||
+        (bleRequired == null && bleEvidenceFreshnessMs == null)) {
+      return;
+    }
+
+    setState(() => _savingFantasyWarsDuelConfig = true);
+    try {
+      await ref
+          .read(lobbyProvider(widget.sessionId).notifier)
+          .updateFantasyWarsDuelConfig(
+            allowGpsFallbackWithoutBle:
+                bleRequired == null ? null : !bleRequired,
+            bleEvidenceFreshnessMs: bleEvidenceFreshnessMs,
+          );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      _showError('근접 결투 설정 저장 실패: $error');
+    } finally {
+      if (mounted) {
+        setState(() => _savingFantasyWarsDuelConfig = false);
+      }
+    }
+  }
+
   void _showError(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -170,6 +203,32 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
         backgroundColor: Colors.red,
       ),
     );
+  }
+
+  String _friendlyStartError(Object error) {
+    if (error is LobbyStartGameException) {
+      switch (error.code) {
+        case 'FANTASY_WARS_NOT_ENOUGH_PLAYERS':
+          final required = error.details['required'];
+          final current = error.details['current'];
+          return '게임 시작 실패: 인원이 부족합니다. 현재 ${current ?? '?'}명 / 최소 ${required ?? '?'}명';
+        case 'FANTASY_WARS_TEAM_ASSIGNMENT_REQUIRED':
+          final unassigned = error.details['unassignedCount'];
+          return '게임 시작 실패: 아직 길드가 정해지지 않은 인원이 ${unassigned ?? '?'}명 있습니다.';
+        case 'FANTASY_WARS_TEAM_SIZE_TOO_SMALL':
+          return '게임 시작 실패: 각 길드에 최소 2명 이상 있어야 합니다.';
+        case 'FANTASY_WARS_PLAYABLE_AREA_REQUIRED':
+          return '게임 시작 실패: 플레이 구역을 먼저 설정해주세요.';
+        case 'FANTASY_WARS_CONTROL_POINTS_REQUIRED':
+          return '게임 시작 실패: 점령지를 모두 배치해주세요.';
+        case 'FANTASY_WARS_SPAWN_ZONES_REQUIRED':
+          return '게임 시작 실패: 길드 시작 지점을 모두 배치해주세요.';
+        case 'CONTROL_POINT_LOCATIONS_REQUIRED':
+          return '게임 시작 실패: 점령지 좌표가 올바르지 않습니다.';
+      }
+    }
+
+    return '게임 시작 실패: $error';
   }
 
   @override
@@ -194,13 +253,26 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
 
     final isHost = (session?.isHost ?? false) ||
         members.any((member) => member.userId == myUserId && member.role == 'host');
-    final minPlayers = GameUiPluginRegistry.minPlayersFor(gameType);
     final teams = _teamConfigsFor(session);
     final layoutStatus = _FantasyWarsLayoutStatus.fromSession(session, teams.length);
-    final canStart = members.length >= minPlayers &&
-        (isFantasyWars
-            ? (layoutStatus.isReady || _layoutSavedInThisVisit)
-            : (session?.playableArea?.length ?? 0) >= 3 || _layoutSavedInThisVisit);
+    final duelSettings = isFantasyWars
+        ? _FantasyWarsDuelSettings.fromSession(session)
+        : null;
+    final startStatus = isFantasyWars
+        ? _FantasyWarsStartStatus.fromSession(
+            session: session,
+            members: members,
+            teams: teams,
+          )
+        : null;
+    final minPlayers = isFantasyWars
+        ? (startStatus?.requiredTotalPlayers ?? 9)
+        : GameUiPluginRegistry.minPlayersFor(gameType);
+    final fantasyWarsLayoutReady = layoutStatus.isReady || _layoutSavedInThisVisit;
+    final canStart = isFantasyWars
+        ? fantasyWarsLayoutReady && (startStatus?.isReady ?? false)
+        : members.length >= minPlayers &&
+            ((session?.playableArea?.length ?? 0) >= 3 || _layoutSavedInThisVisit);
 
     return PopScope(
       canPop: false,
@@ -256,6 +328,26 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
                     if (isFantasyWars) ...[
                       _FantasyWarsLayoutCard(status: layoutStatus),
                       const SizedBox(height: 16),
+                      _FantasyWarsStartCard(status: startStatus!),
+                      const SizedBox(height: 16),
+                      _FantasyWarsDuelSettingsCard(
+                        settings: duelSettings!,
+                        isHost: isHost,
+                        isSaving: _savingFantasyWarsDuelConfig,
+                        onBleRequirementChanged: (value) {
+                          unawaited(
+                            _updateFantasyWarsDuelConfig(bleRequired: value),
+                          );
+                        },
+                        onBleFreshnessChanged: (value) {
+                          unawaited(
+                            _updateFantasyWarsDuelConfig(
+                              bleEvidenceFreshnessMs: value,
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 16),
                       _FantasyWarsTeamBoard(
                         teams: teams,
                         members: members,
@@ -287,11 +379,20 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
                         ),
                       ),
                       const SizedBox(height: 8),
-                      if (isFantasyWars && !layoutStatus.isReady)
+                      if (isFantasyWars && !fantasyWarsLayoutReady)
                         Text(
                           layoutStatus.missingSummary,
                           textAlign: TextAlign.center,
                           style: const TextStyle(color: Colors.orange),
+                        ),
+                      if (isFantasyWars && startStatus != null && !startStatus.isReady)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(
+                            startStatus.missingSummary,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.orange),
+                          ),
                         ),
                       if (!isFantasyWars && (session?.playableArea?.length ?? 0) < 3)
                         const Text(
@@ -299,7 +400,7 @@ class _LobbyScreenState extends ConsumerState<LobbyScreen> {
                           textAlign: TextAlign.center,
                           style: TextStyle(color: Colors.orange),
                         ),
-                      if (members.length < minPlayers)
+                      if (!isFantasyWars && members.length < minPlayers)
                         Text(
                           '최소 $minPlayers명 이상 필요합니다.',
                           textAlign: TextAlign.center,
@@ -383,10 +484,10 @@ class _FantasyWarsLayoutStatus {
       parts.add('플레이 구역');
     }
     if (controlPointCount != expectedControlPointCount) {
-      parts.add('점령지 5개');
+      parts.add('점령지 ${expectedControlPointCount}개');
     }
     if (spawnZoneCount != expectedSpawnZoneCount) {
-      parts.add('길드 시작 지점 3개');
+      parts.add('길드 시작 지점 ${expectedSpawnZoneCount}개');
     }
     return parts.isEmpty
         ? '전장 설정이 완료되었습니다.'
@@ -402,6 +503,85 @@ class _FantasyWarsLayoutStatus {
       expectedControlPointCount: expectedControlPointCount,
       spawnZoneCount: session?.fantasyWarsSpawnZones.length ?? 0,
       expectedSpawnZoneCount: teamCount,
+    );
+  }
+}
+
+class _FantasyWarsStartStatus {
+  const _FantasyWarsStartStatus({
+    required this.currentPlayers,
+    required this.requiredTotalPlayers,
+    required this.minimumPlayersPerTeam,
+    required this.unassignedCount,
+    required this.teamCounts,
+    required this.undersizedTeams,
+  });
+
+  final int currentPlayers;
+  final int requiredTotalPlayers;
+  final int minimumPlayersPerTeam;
+  final int unassignedCount;
+  final Map<String, int> teamCounts;
+  final List<FantasyWarsTeamConfig> undersizedTeams;
+
+  bool get hasEnoughPlayers => currentPlayers >= requiredTotalPlayers;
+  bool get hasUnassignedPlayers => unassignedCount > 0;
+  bool get hasUndersizedTeams => undersizedTeams.isNotEmpty;
+  bool get isReady =>
+      hasEnoughPlayers && !hasUnassignedPlayers && !hasUndersizedTeams;
+
+  String get missingSummary {
+    final issues = <String>[];
+    if (!hasEnoughPlayers) {
+      issues.add('최소 $requiredTotalPlayers명 필요');
+    }
+    if (hasUnassignedPlayers) {
+      issues.add('미배정 인원 $unassignedCount명');
+    }
+    if (hasUndersizedTeams) {
+      issues.add(
+        '${undersizedTeams.map((team) => '${team.displayName} ${teamCounts[team.teamId] ?? 0}/$minimumPlayersPerTeam').join(', ')}',
+      );
+    }
+
+    return issues.isEmpty
+        ? '시작 인원 조건이 충족되었습니다.'
+        : '시작 전 확인: ${issues.join(' · ')}';
+  }
+
+  static _FantasyWarsStartStatus fromSession({
+    required Session? session,
+    required List<SessionMember> members,
+    required List<FantasyWarsTeamConfig> teams,
+  }) {
+    final teamCounts = <String, int>{
+      for (final team in teams) team.teamId: 0,
+    };
+
+    var unassignedCount = 0;
+    for (final member in members) {
+      final teamId = member.teamId;
+      if (teamId == null || !teamCounts.containsKey(teamId)) {
+        unassignedCount += 1;
+        continue;
+      }
+      teamCounts[teamId] = (teamCounts[teamId] ?? 0) + 1;
+    }
+
+    final teamCount =
+        (session?.gameConfig['teamCount'] as num?)?.toInt() ?? teams.length;
+    final requiredTotalPlayers = (teamCount * 3) > 9 ? teamCount * 3 : 9;
+    final undersizedTeams = teams
+        .where((team) => (teamCounts[team.teamId] ?? 0) < 2)
+        .toList(growable: false);
+
+    return _FantasyWarsStartStatus(
+      currentPlayers: members.length,
+      requiredTotalPlayers: requiredTotalPlayers,
+      minimumPlayersPerTeam: 2,
+      unassignedCount: unassignedCount,
+      teamCounts: teamCounts,
+      undersizedTeams: undersizedTeams,
     );
   }
 }
@@ -494,6 +674,213 @@ class _FantasyWarsLayoutCard extends StatelessWidget {
                 color: status.isReady ? Colors.green.shade700 : Colors.orange.shade800,
                 fontWeight: FontWeight.w600,
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FantasyWarsStartCard extends StatelessWidget {
+  const _FantasyWarsStartCard({required this.status});
+
+  final _FantasyWarsStartStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '시작 준비 상태',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _StatusChip(
+                  label: '인원 ${status.currentPlayers}/${status.requiredTotalPlayers}',
+                  ready: status.hasEnoughPlayers,
+                ),
+                _StatusChip(
+                  label: status.hasUnassignedPlayers
+                      ? '미배정 ${status.unassignedCount}명'
+                      : '길드 배정 완료',
+                  ready: !status.hasUnassignedPlayers,
+                ),
+                _StatusChip(
+                  label: status.hasUndersizedTeams
+                      ? '길드 최소 ${status.minimumPlayersPerTeam}명 필요'
+                      : '길드별 최소 인원 충족',
+                  ready: !status.hasUndersizedTeams,
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              status.missingSummary,
+              style: TextStyle(
+                color: status.isReady ? Colors.green.shade700 : Colors.orange.shade800,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '직업은 게임 시작 시 각 길드 인원 순서에 맞춰 랜덤 배정됩니다.',
+              style: TextStyle(
+                color: Colors.grey.shade700,
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FantasyWarsDuelSettings {
+  const _FantasyWarsDuelSettings({
+    required this.bleRequired,
+    required this.bleEvidenceFreshnessMs,
+    required this.duelRangeMeters,
+  });
+
+  static const int defaultBleEvidenceFreshnessMs = 12000;
+  static const int defaultDuelRangeMeters = 20;
+
+  final bool bleRequired;
+  final int bleEvidenceFreshnessMs;
+  final int duelRangeMeters;
+
+  static _FantasyWarsDuelSettings fromSession(Session? session) {
+    final config = session?.gameConfig ?? const <String, dynamic>{};
+    final allowGpsFallback = config['allowGpsFallbackWithoutBle'] as bool? ?? false;
+
+    return _FantasyWarsDuelSettings(
+      bleRequired: !allowGpsFallback,
+      bleEvidenceFreshnessMs:
+          (config['bleEvidenceFreshnessMs'] as num?)?.toInt() ??
+              defaultBleEvidenceFreshnessMs,
+      duelRangeMeters:
+          (config['duelRangeMeters'] as num?)?.toInt() ??
+              defaultDuelRangeMeters,
+    );
+  }
+}
+
+class _FantasyWarsDuelSettingsCard extends StatelessWidget {
+  const _FantasyWarsDuelSettingsCard({
+    required this.settings,
+    required this.isHost,
+    required this.isSaving,
+    required this.onBleRequirementChanged,
+    required this.onBleFreshnessChanged,
+  });
+
+  final _FantasyWarsDuelSettings settings;
+  final bool isHost;
+  final bool isSaving;
+  final ValueChanged<bool> onBleRequirementChanged;
+  final ValueChanged<int> onBleFreshnessChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final freshnessOptions = <int>{
+      8000,
+      _FantasyWarsDuelSettings.defaultBleEvidenceFreshnessMs,
+      20000,
+      settings.bleEvidenceFreshnessMs,
+    }.toList()
+      ..sort();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    '근접 결투 설정',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                if (isSaving)
+                  const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              isHost
+                  ? '호스트가 BLE 근접 확인 정책을 조정할 수 있습니다.'
+                  : '이 경기는 아래 기준으로 결투 가능 여부를 판단합니다.',
+              style: TextStyle(
+                color: Colors.grey.shade700,
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: 12),
+            SwitchListTile.adaptive(
+              value: settings.bleRequired,
+              onChanged: isHost && !isSaving ? onBleRequirementChanged : null,
+              contentPadding: EdgeInsets.zero,
+              title: const Text('BLE 확인 필수'),
+              subtitle: Text(
+                settings.bleRequired
+                    ? 'BLE가 잡힌 적만 결투 후보에 표시됩니다.'
+                    : 'BLE가 없어도 GPS 거리만 맞으면 결투를 허용합니다.',
+              ),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<int>(
+              initialValue: settings.bleEvidenceFreshnessMs,
+              decoration: const InputDecoration(
+                labelText: 'BLE 증거 유지 시간',
+                helperText: '근접 스캔이 잠깐 흔들려도 이 시간 안이면 결투를 허용합니다.',
+                border: OutlineInputBorder(),
+              ),
+              items: [
+                for (final value in freshnessOptions)
+                  DropdownMenuItem<int>(
+                    value: value,
+                    child: Text('${value ~/ 1000}초'),
+                  ),
+              ],
+              onChanged: isHost && !isSaving
+                  ? (value) {
+                      if (value != null) {
+                        onBleFreshnessChanged(value);
+                      }
+                    }
+                  : null,
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _StatusChip(
+                  label: '결투 거리 ${settings.duelRangeMeters}m',
+                  ready: true,
+                ),
+                _StatusChip(
+                  label: '증거 유지 ${settings.bleEvidenceFreshnessMs ~/ 1000}초',
+                  ready: settings.bleRequired,
+                ),
+              ],
             ),
           ],
         ),

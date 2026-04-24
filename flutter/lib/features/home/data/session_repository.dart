@@ -431,6 +431,27 @@ class SessionRepository {
     return getSession(sessionId);
   }
 
+  Future<Session> updateFantasyWarsDuelConfig(
+    String sessionId, {
+    bool? allowGpsFallbackWithoutBle,
+    int? bleEvidenceFreshnessMs,
+  }) async {
+    final data = <String, dynamic>{};
+    if (allowGpsFallbackWithoutBle != null) {
+      data['allowGpsFallbackWithoutBle'] = allowGpsFallbackWithoutBle;
+    }
+    if (bleEvidenceFreshnessMs != null) {
+      data['bleEvidenceFreshnessMs'] = bleEvidenceFreshnessMs;
+    }
+
+    await _api.patch(
+      '/sessions/$sessionId/fantasy-wars-duel-config',
+      data: data,
+    );
+
+    return getSession(sessionId);
+  }
+
   Future<void> leaveSession(String id) async {
     await _api.post('/sessions/$id/leave');
   }

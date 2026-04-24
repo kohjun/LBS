@@ -1,3 +1,5 @@
+// ignore_for_file: unnecessary_brace_in_string_interps, unused_element
+
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -8,6 +10,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../../../core/router/app_router.dart';
 import '../../../../../core/services/app_initialization_service.dart';
+import '../../../../../core/services/fantasy_wars_proximity_service.dart';
 import '../../../../../core/services/fcm_service.dart';
 import '../../../../../core/services/mediasoup_audio_service.dart';
 import '../../../../../core/services/socket_service.dart';
@@ -16,7 +19,7 @@ import '../../../../home/data/session_repository.dart';
 import '../../../../map/data/map_session_provider.dart';
 import '../../../../map/presentation/map_session_models.dart';
 import '../../../providers/fantasy_wars_provider.dart';
-import 'duel/fw_duel_screen.dart' show FwDuelScreen;
+import 'duel/fw_duel_screen_v2.dart' show FwDuelScreen;
 import 'fantasy_wars_hud.dart';
 
 class FantasyWarsGameScreen extends ConsumerStatefulWidget {
@@ -33,6 +36,8 @@ class FantasyWarsGameScreen extends ConsumerStatefulWidget {
 }
 
 class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
+  static const _duelProximity = FantasyWarsProximityService();
+
   NaverMapController? _mapController;
   bool _mapSdkReady = false;
   bool _bootstrapping = false;
@@ -1129,12 +1134,29 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     );
   }
 
+  FwDuelProximityContext? _duelProximityForUser(
+    String userId,
+    MapSessionState mapState,
+    String? myId,
+  ) {
+    final fwState = ref.read(fantasyWarsProvider(widget.sessionId));
+    return _duelProximity.forTarget(
+      targetUserId: userId,
+      mapState: mapState,
+      myUserId: myId,
+      allowGpsFallbackWithoutBle: fwState.allowGpsFallbackWithoutBle,
+      bleFreshnessWindowMs: fwState.bleEvidenceFreshnessMs,
+      gpsFallbackMaxRangeMeters: fwState.duelRangeMeters.toDouble(),
+    );
+  }
+
   List<String> _candidateMemberIds({
     required MapSessionState mapState,
     required FantasyWarsGameState fwState,
     required String? myId,
     required bool enemy,
     bool includeSelf = false,
+    bool nearbyOnly = false,
   }) {
     final ids = <String>{
       ...mapState.members.keys,
@@ -1149,6 +1171,10 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
         return false;
       }
       if (fwState.eliminatedPlayerIds.contains(userId)) {
+        return false;
+      }
+      if (nearbyOnly &&
+          _duelProximityForUser(userId, mapState, myId) == null) {
         return false;
       }
 
@@ -1370,6 +1396,7 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     required String? myId,
     required bool enemy,
     bool includeSelf = false,
+    bool nearbyOnly = false,
   }) {
     final userIds = _candidateMemberIds(
       mapState: mapState,
@@ -1377,6 +1404,7 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
       myId: myId,
       enemy: enemy,
       includeSelf: includeSelf,
+      nearbyOnly: nearbyOnly,
     );
 
     final choices = userIds.map((userId) {
@@ -1388,6 +1416,9 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
           ? null
           : fwState.guilds[guildId]?.displayName ?? guildId;
       final isNearest = userIds.isNotEmpty && identical(userIds.first, userId);
+      final duelProximity = nearbyOnly
+          ? _duelProximityForUser(userId, mapState, myId)
+          : null;
       return _TargetChoice(
         value: userId,
         label: nickname,
@@ -1397,10 +1428,16 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
             : '거리 불명',
         badge: userId == myId
             ? '자신'
+            : nearbyOnly
+                ? (duelProximity?.source == 'ble' ? 'BLE' : '근접')
             : enemy
                 ? '적'
                 : '아군',
-        helper: isNearest ? '현재 위치 기준 가장 가까운 대상' : null,
+        helper: nearbyOnly
+            ? (duelProximity?.source == 'ble'
+                ? 'BLE 근접 확인'
+                : '근거리 결투 가능')
+            : (isNearest ? '현재 위치 기준 가장 가까운 대상' : null),
         accentColor: userId == myId
             ? Colors.white
             : enemy
@@ -1528,6 +1565,119 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     });
   }
 
+  Future<void> _focusMapTarget({
+    required double lat,
+    required double lng,
+    double zoom = 16.4,
+  }) async {
+    final controller = _mapController;
+    if (controller == null) {
+      return;
+    }
+    try {
+      await controller.updateCamera(
+        NCameraUpdate.scrollAndZoomTo(
+          target: NLatLng(lat, lng),
+          zoom: zoom,
+        )..setAnimation(animation: NCameraAnimation.easing),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _focusRecentEvent(
+    FwRecentEvent event, {
+    required FantasyWarsGameState fwState,
+    required MapSessionState mapState,
+  }) async {
+    final controlPointId = event.controlPointId;
+    if (controlPointId != null) {
+      final controlPoint = _controlPointById(fwState, controlPointId);
+      if (controlPoint != null) {
+        _setSelection(memberId: null, controlPointId: controlPointId);
+        if (controlPoint.lat != null && controlPoint.lng != null) {
+          await _focusMapTarget(
+            lat: controlPoint.lat!,
+            lng: controlPoint.lng!,
+            zoom: 16.2,
+          );
+        }
+        return;
+      }
+    }
+
+    final memberId = event.primaryUserId ?? event.secondaryUserId;
+    if (memberId == null) {
+      if (controlPointId != null) {
+        _setSelection(memberId: null, controlPointId: controlPointId);
+      }
+      return;
+    }
+
+    final member = mapState.members[memberId];
+    _setSelection(memberId: memberId, controlPointId: null);
+    if (member == null || (member.lat == 0 && member.lng == 0)) {
+      return;
+    }
+
+    await _focusMapTarget(
+      lat: member.lat,
+      lng: member.lng,
+      zoom: 16.8,
+    );
+  }
+
+  Future<void> _openRecentEventDetails(FwRecentEvent event) async {
+    if (!mounted) {
+      return;
+    }
+    final fwState = ref.read(fantasyWarsProvider(widget.sessionId));
+    final mapState = ref.read(mapSessionProvider(widget.sessionId));
+    final myId = ref.read(authProvider).valueOrNull?.id;
+
+    await _focusRecentEvent(
+      event,
+      fwState: fwState,
+      mapState: mapState,
+    );
+
+    if (!mounted) {
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 90));
+    if (!mounted) {
+      return;
+    }
+
+    final controlPointId = event.controlPointId;
+    if (controlPointId != null &&
+        _controlPointById(fwState, controlPointId) != null) {
+      await _handleControlPointTapped(
+        controlPointId: controlPointId,
+        fwState: fwState,
+        mapState: mapState,
+        myId: myId,
+      );
+      return;
+    }
+
+    String? memberId;
+    for (final candidateUserId in [event.primaryUserId, event.secondaryUserId]) {
+      if (candidateUserId != null &&
+          mapState.members.containsKey(candidateUserId)) {
+        memberId = candidateUserId;
+        break;
+      }
+    }
+    if (memberId != null) {
+      await _handleMemberTapped(
+        userId: memberId,
+        fwState: fwState,
+        mapState: mapState,
+        myId: myId,
+      );
+    }
+  }
+
   Future<void> _handleMemberTapped({
     required String userId,
     required FantasyWarsGameState fwState,
@@ -1547,10 +1697,14 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     final isAlly =
         !isSelf && guildId != null && guildId == fwState.myState.guildId;
     final canAct = fwState.myState.isAlive && !fwState.myState.inDuel;
+    final duelProximity = _duelProximityForUser(userId, mapState, myId);
     final notifier = ref.read(fantasyWarsProvider(widget.sessionId).notifier);
 
     final actions = <_QuickAction>[];
-    if (canAct && isEnemy && fwState.duel.phase == 'idle') {
+    if (canAct &&
+        isEnemy &&
+        fwState.duel.phase == 'idle' &&
+        duelProximity != null) {
       actions.add(
         _QuickAction(
           label: '대결 요청',
@@ -1558,7 +1712,10 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
           color: const Color(0xFF991B1B),
           onTap: () async {
             Navigator.of(context).pop();
-            await _runAck(() => notifier.challengeDuel(userId));
+            await _runAck(() => notifier.challengeDuel(
+                  userId,
+                  proximity: duelProximity.toMap(),
+                ));
           },
         ),
       );
@@ -1790,7 +1947,7 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
         return;
       }
       if (result['ok'] != true) {
-        _showError(_errorLabel(result['error'] as String?));
+        _showError(_resolveErrorLabel(result['error'] as String?));
       }
     } catch (error) {
       if (!mounted) {
@@ -1912,26 +2069,64 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     MapSessionState mapState,
     String? myId,
   ) async {
-    final targetUserId = _preferredSelectedMember(
-          fwState: fwState,
-          myId: myId,
-          enemy: true,
-        ) ??
-        await _pickMemberTarget(
+    final selectedTargetUserId = _preferredSelectedMember(
+      fwState: fwState,
+      myId: myId,
+      enemy: true,
+    );
+    final nearbyTargetIds = _candidateMemberIds(
+      mapState: mapState,
+      fwState: fwState,
+      myId: myId,
+      enemy: true,
+      nearbyOnly: true,
+    );
+    final selectedTargetProximity = selectedTargetUserId == null
+        ? null
+        : _duelProximityForUser(selectedTargetUserId, mapState, myId);
+    final missingNearbyTarget =
+        selectedTargetProximity == null && nearbyTargetIds.isEmpty;
+    if (missingNearbyTarget) {
+      _showError(_bleRequirementMessage(mapState));
+      return;
+    }
+    if (selectedTargetProximity == null && nearbyTargetIds.isEmpty) {
+      _showError('가까운 적이 있어야 결투를 신청할 수 있습니다.');
+      return;
+    }
+    final targetUserId = selectedTargetProximity != null
+        ? selectedTargetUserId
+        : await _pickMemberTarget(
           title: '대결할 적 선택',
           mapState: mapState,
           fwState: fwState,
           myId: myId,
           enemy: true,
+          nearbyOnly: true,
         );
     if (targetUserId == null) {
+      return;
+    }
+
+    final proximity = _duelProximityForUser(targetUserId, mapState, myId);
+    final missingProximity = proximity == null;
+    if (missingProximity) {
+      _showError(_bleRequirementMessage(mapState));
+      return;
+    }
+    // ignore: unnecessary_null_comparison
+    if (proximity == null) {
+      _showError('근거리 감지가 확인된 적만 결투할 수 있습니다.');
       return;
     }
 
     await _runAck(() {
       return ref
           .read(fantasyWarsProvider(widget.sessionId).notifier)
-          .challengeDuel(targetUserId);
+          .challengeDuel(
+            targetUserId,
+            proximity: proximity.toMap(),
+          );
     });
   }
 
@@ -1944,8 +2139,677 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     );
   }
 
+  String _bleRequirementMessage(MapSessionState mapState) {
+    final strictBleRequired =
+        !ref.read(fantasyWarsProvider(widget.sessionId)).allowGpsFallbackWithoutBle;
+    if (!strictBleRequired) {
+      return '근거리 판정이 확인되지 않았습니다. 상대와 더 가까워져 주세요.';
+    }
+
+    switch (mapState.blePresenceStatus) {
+      case 'permissionDenied':
+        return '근접 결투를 하려면 Bluetooth와 위치 권한을 허용해 주세요.';
+      case 'requestingPermission':
+        return 'Bluetooth 권한을 확인하는 중입니다. 잠시 후 다시 시도해 주세요.';
+      case 'bluetoothUnavailable':
+        return mapState.blePresenceMessage == null ||
+                mapState.blePresenceMessage!.isEmpty
+            ? 'Bluetooth 또는 위치 서비스 상태를 확인한 뒤 다시 시도해 주세요.'
+            : '${mapState.blePresenceMessage} 다시 시도해 주세요.';
+      case 'starting':
+        return 'BLE 근접 탐색을 준비 중입니다. 잠시 후 다시 시도해 주세요.';
+      case 'running':
+        return mapState.bleContacts.isEmpty
+            ? '아직 근거리 감지가 없습니다. 상대와 더 가까워져 주세요.'
+            : '근거리 감지가 갱신되지 않았습니다. 상대와 다시 가까워져 주세요.';
+      case 'error':
+        return mapState.blePresenceMessage == null ||
+                mapState.blePresenceMessage!.isEmpty
+            ? 'BLE 근접 탐색을 시작하지 못했습니다. Bluetooth 상태를 확인해 주세요.'
+            : '${mapState.blePresenceMessage} 다시 시도해 주세요.';
+      case 'unsupported':
+        return '이 기기에서는 BLE 근접 결투를 지원하지 않습니다.';
+      default:
+        return '근거리 감지가 확인되지 않았습니다. 상대와 더 가까워져 주세요.';
+    }
+  }
+
+  int _freshBleContactCount(MapSessionState mapState) {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final bleFreshnessWindowMs =
+        ref.read(fantasyWarsProvider(widget.sessionId)).bleEvidenceFreshnessMs;
+    return mapState.bleContacts.values
+        .where(
+          (contact) =>
+              nowMs - contact.seenAtMs <= bleFreshnessWindowMs,
+        )
+        .length;
+  }
+
+  String? _bleSummary(MapSessionState mapState, int nearbyEnemyCount) {
+    if (mapState.gameState.status != 'in_progress') {
+      return null;
+    }
+
+    switch (mapState.blePresenceStatus) {
+      case 'running':
+        if (nearbyEnemyCount > 0) {
+          return 'BLE 쨌 적 $nearbyEnemyCount명 감지';
+        }
+        final freshContacts = _freshBleContactCount(mapState);
+        return freshContacts > 0
+            ? 'BLE 쨌 근접 $freshContacts명 감지'
+            : 'BLE 쨌 탐색 중';
+      case 'starting':
+        return 'BLE 쨌 준비 중';
+      case 'requestingPermission':
+        return 'BLE 쨌 권한 확인 중';
+      case 'permissionDenied':
+        return 'BLE 쨌 권한 필요';
+      case 'bluetoothUnavailable':
+        return 'BLE 쨌 ${mapState.blePresenceMessage ?? '상태 확인 필요'}';
+      case 'error':
+        return 'BLE 쨌 ${mapState.blePresenceMessage ?? '초기화 실패'}';
+      case 'unsupported':
+        return 'BLE 쨌 지원 안 됨';
+      default:
+        return 'BLE 쨌 대기 중';
+    }
+  }
+
+  bool _shouldShowDuelDebug(FwDuelDebugInfo? info) {
+    if (info == null) {
+      return false;
+    }
+    final ageMs = DateTime.now().millisecondsSinceEpoch - info.recordedAt;
+    return ageMs <= 15000;
+  }
+
+  List<String> _duelDebugLines(FantasyWarsGameState fwState) {
+    final debug = fwState.duelDebug;
+    if (!_shouldShowDuelDebug(debug)) {
+      return const [];
+    }
+
+    final info = debug!;
+    final lines = <String>[
+      switch (info.stage) {
+        'challenge' => info.ok ? '마지막 대결 요청 성공' : '마지막 대결 요청 실패',
+        'accept' => info.ok ? '마지막 대결 수락 성공' : '마지막 대결 수락 실패',
+        'invalidated' => '대결 무효 처리',
+        _ => info.ok ? '최근 결투 판정 성공' : '최근 결투 판정 실패',
+      },
+    ];
+
+    if (info.stage == 'invalidated') {
+      lines.add(_duelInvalidationLabel(info.code));
+    } else if (info.code != null) {
+      lines.add(_resolveErrorLabel(info.code));
+    }
+
+    if (info.distanceMeters != null || info.duelRangeMeters != null) {
+      lines.add(
+        '거리 ${info.distanceMeters ?? '?'}m / 허용 ${info.duelRangeMeters ?? fwState.duelRangeMeters}m',
+      );
+    }
+
+    final proximityLine = _duelDebugProximityLine(info);
+    if (proximityLine != null) {
+      lines.add(proximityLine);
+    }
+
+    final evidenceLine = _duelDebugEvidenceLine(info);
+    if (evidenceLine != null) {
+      lines.add(evidenceLine);
+    }
+
+    return lines.take(4).toList(growable: false);
+  }
+
+  String? _duelDebugProximityLine(FwDuelDebugInfo info) {
+    if (info.bleConfirmed == true) {
+      return info.mutualProximity == true
+          ? '근접 판정 BLE 확인 · 상호 감지'
+          : '근접 판정 BLE 확인';
+    }
+    if (info.gpsFallbackUsed == true) {
+      return info.allowGpsFallbackWithoutBle == true
+          ? '근접 판정 GPS fallback 허용'
+          : '근접 판정 GPS fallback 차단';
+    }
+    if (info.proximitySource != null) {
+      return '근접 판정 ${info.proximitySource}';
+    }
+    return null;
+  }
+
+  String? _duelDebugEvidenceLine(FwDuelDebugInfo info) {
+    if (info.recentProximityReports == null &&
+        info.freshestEvidenceAgeMs == null) {
+      return null;
+    }
+
+    final reportCount = info.recentProximityReports ?? 0;
+    final freshnessWindowSec =
+        ((info.bleEvidenceFreshnessMs ?? 0) / 1000).round();
+    if (info.freshestEvidenceAgeMs == null) {
+      return '최근 근접 보고 $reportCount건';
+    }
+
+    final seenAgoSec = (info.freshestEvidenceAgeMs! / 1000).toStringAsFixed(1);
+    if (freshnessWindowSec > 0) {
+      return '최근 근접 보고 $reportCount건 · ${seenAgoSec}초 전 / 기준 ${freshnessWindowSec}초';
+    }
+    return '최근 근접 보고 $reportCount건 · ${seenAgoSec}초 전';
+  }
+
+  String _duelInvalidationLabel(String? reason) => switch (reason) {
+        'challenge_timeout' => '상대가 제한 시간 안에 수락하지 않았습니다.',
+        'disconnect' => '참가자 연결이 끊겨 대결이 취소되었습니다.',
+        'BLE_PROXIMITY_REQUIRED' => '수락 시점에 BLE 근접 확인이 사라졌습니다.',
+        'TARGET_OUT_OF_RANGE' => '수락 시점에 대결 가능 거리 밖으로 벗어났습니다.',
+        'LOCATION_STALE' => '수락 시점 위치 정보가 오래되어 대결이 취소되었습니다.',
+        'LOCATION_UNAVAILABLE' => '수락 시점 위치 정보를 확인할 수 없었습니다.',
+        _ => reason ?? '대결 조건이 유지되지 않았습니다.',
+      };
+
+  Future<void> _openHostDebugSheet({
+    required FantasyWarsGameState fwState,
+    required MapSessionState mapState,
+    required Map<String, String> memberLabels,
+    required List<String> duelCandidateIds,
+    required String? myId,
+  }) {
+    if (!mounted) {
+      return Future.value();
+    }
+
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final systemLines = _hostDebugSystemLines(
+      fwState: fwState,
+      mapState: mapState,
+      nearbyEnemyCount: duelCandidateIds.length,
+    );
+    final duelLines = _duelDebugLines(fwState);
+    final bleLines = _hostDebugBleContactLines(
+      fwState: fwState,
+      mapState: mapState,
+      memberLabels: memberLabels,
+      myId: myId,
+      nowMs: nowMs,
+    );
+    final candidateLines = _hostDebugCandidateLines(
+      fwState: fwState,
+      mapState: mapState,
+      memberLabels: memberLabels,
+      myId: myId,
+      nowMs: nowMs,
+    );
+
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return SafeArea(
+          child: FractionallySizedBox(
+            heightFactor: 0.8,
+            child: Container(
+              decoration: const BoxDecoration(
+                color: Color(0xFF111827),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0F766E).withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: const Icon(
+                          Icons.admin_panel_settings_rounded,
+                          color: Color(0xFF5EEAD4),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Host Log',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              'Live battlefield debug info',
+                              style: TextStyle(
+                                color: Colors.white60,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Expanded(
+                    child: ListView(
+                      children: [
+                        _HostDebugSection(
+                          title: 'System',
+                          lines: systemLines,
+                        ),
+                        const SizedBox(height: 12),
+                        _HostEventSection(
+                          title: 'Recent Events',
+                          events: fwState.recentEvents,
+                          onEventTap: (event) {
+                            Navigator.of(context).pop();
+                            unawaited(() async {
+                              await Future<void>.delayed(
+                                const Duration(milliseconds: 120),
+                              );
+                              if (!mounted) {
+                                return;
+                              }
+                              await _focusRecentEvent(
+                                event,
+                                fwState:
+                                    ref.read(fantasyWarsProvider(widget.sessionId)),
+                                mapState:
+                                    ref.read(mapSessionProvider(widget.sessionId)),
+                              );
+                            }());
+                          },
+                          onEventInspectTap: (event) {
+                            Navigator.of(context).pop();
+                            unawaited(() async {
+                              await Future<void>.delayed(
+                                const Duration(milliseconds: 120),
+                              );
+                              if (!mounted) {
+                                return;
+                              }
+                              await _openRecentEventDetails(event);
+                            }());
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                        _HostDebugSection(
+                          title: 'Last Duel Check',
+                          lines: duelLines.isEmpty
+                              ? const ['No recent duel debug']
+                              : duelLines,
+                        ),
+                        const SizedBox(height: 12),
+                        _HostDebugSection(
+                          title: 'BLE Contacts',
+                          lines: bleLines,
+                        ),
+                        const SizedBox(height: 12),
+                        _HostDebugSection(
+                          title: 'Enemy Candidates',
+                          lines: candidateLines,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  List<String> _hostSystemLines({
+    required FantasyWarsGameState fwState,
+    required MapSessionState mapState,
+    required int nearbyEnemyCount,
+  }) {
+    final freshnessSeconds = (fwState.bleEvidenceFreshnessMs / 1000).round();
+    final freshContactCount = _freshBleContactCount(mapState);
+    return [
+      'Session · ${mapState.gameState.status}',
+      'Socket · ${mapState.isConnected ? 'connected' : 'disconnected'}',
+      'BLE · ${_hostBleStatusLabel(mapState)}',
+      'Duel Mode · ${fwState.allowGpsFallbackWithoutBle ? 'GPS fallback allowed' : 'BLE required'}',
+      'Duel Range · ${fwState.duelRangeMeters}m / BLE window ${freshnessSeconds}s',
+      'Nearby Summary · enemies $nearbyEnemyCount / fresh contacts $freshContactCount',
+    ];
+  }
+
+  List<String> _hostBleContactLines({
+    required FantasyWarsGameState fwState,
+    required MapSessionState mapState,
+    required Map<String, String> memberLabels,
+    required String? myId,
+    required int nowMs,
+  }) {
+    final contacts = mapState.bleContacts.values.toList()
+      ..sort((a, b) => b.seenAtMs.compareTo(a.seenAtMs));
+    if (contacts.isEmpty) {
+      return const ['No recent BLE contacts'];
+    }
+
+    return contacts.take(6).map((contact) {
+      final name =
+          memberLabels[contact.userId] ?? _memberLabel(mapState.members, contact.userId);
+      final ageMs = nowMs - contact.seenAtMs;
+      final freshnessLabel =
+          ageMs <= fwState.bleEvidenceFreshnessMs ? 'fresh' : 'stale';
+      final distance = _distanceToMember(contact.userId, mapState, myId);
+      final distanceLabel = distance != null && distance.isFinite
+          ? ' · ${distance.round()}m'
+          : '';
+      return '$name · ${contact.rssi} dBm · ${_formatAgeMs(ageMs)} ago$distanceLabel · $freshnessLabel';
+    }).toList(growable: false);
+  }
+
+  List<String> _hostCandidateLines({
+    required FantasyWarsGameState fwState,
+    required MapSessionState mapState,
+    required Map<String, String> memberLabels,
+    required String? myId,
+    required int nowMs,
+  }) {
+    if (myId == null) {
+      return const ['Current user is unavailable'];
+    }
+
+    final enemyIds = _candidateMemberIds(
+      mapState: mapState,
+      fwState: fwState,
+      myId: myId,
+      enemy: true,
+      nearbyOnly: false,
+    );
+    if (enemyIds.isEmpty) {
+      return const ['No visible enemy candidates'];
+    }
+
+    return enemyIds.take(8).map((userId) {
+      final name = memberLabels[userId] ?? _memberLabel(mapState.members, userId);
+      final distance = _distanceToMember(userId, mapState, myId);
+      final distanceLabel = distance != null && distance.isFinite
+          ? '${distance.round()}m'
+          : 'unknown';
+      final proximity = _duelProximityForUser(userId, mapState, myId);
+      final status = _hostCandidateStatus(
+        fwState: fwState,
+        mapState: mapState,
+        userId: userId,
+        distance: distance,
+        proximity: proximity,
+        nowMs: nowMs,
+      );
+      return '$name · $distanceLabel · $status';
+    }).toList(growable: false);
+  }
+
+  String _hostCandidateStatus({
+    required FantasyWarsGameState fwState,
+    required MapSessionState mapState,
+    required String userId,
+    required double? distance,
+    required FwDuelProximityContext? proximity,
+    required int nowMs,
+  }) {
+    if (proximity?.source == 'ble') {
+      return proximity?.rssi == null
+          ? 'BLE ready'
+          : 'BLE ready (${proximity!.rssi} dBm)';
+    }
+    if (proximity?.source == 'gps_fallback') {
+      return 'GPS fallback ready';
+    }
+
+    final contact = mapState.bleContacts[userId];
+    if (contact != null) {
+      final ageMs = nowMs - contact.seenAtMs;
+      if (ageMs > fwState.bleEvidenceFreshnessMs) {
+        return 'BLE stale (${_formatAgeMs(ageMs)} ago)';
+      }
+    }
+    if (distance != null && distance.isFinite) {
+      if (distance <= fwState.duelRangeMeters) {
+        return fwState.allowGpsFallbackWithoutBle
+            ? 'GPS in range'
+            : 'in range · no BLE';
+      }
+      return 'out of range';
+    }
+    return 'unavailable';
+  }
+
+  String _hostBleStatusLabel(MapSessionState mapState) {
+    return switch (mapState.blePresenceStatus) {
+      'running' => 'running',
+      'starting' => 'starting',
+      'requestingPermission' => 'requesting permission',
+      'permissionDenied' => 'permission denied',
+      'bluetoothUnavailable' =>
+        mapState.blePresenceMessage == null ||
+                mapState.blePresenceMessage!.isEmpty
+            ? 'bluetooth unavailable'
+            : mapState.blePresenceMessage!,
+      'error' => mapState.blePresenceMessage == null ||
+              mapState.blePresenceMessage!.isEmpty
+          ? 'error'
+          : mapState.blePresenceMessage!,
+      'unsupported' => 'unsupported',
+      _ => 'idle',
+    };
+  }
+
+  String _formatAgeMs(int ageMs) {
+    if (ageMs <= 0) {
+      return '0.0s';
+    }
+    if (ageMs >= 60000) {
+      final minutes = ageMs ~/ 60000;
+      final seconds = ((ageMs % 60000) / 1000).round();
+      return '${minutes}m ${seconds}s';
+    }
+    if (ageMs >= 10000) {
+      return '${(ageMs / 1000).round()}s';
+    }
+    return '${(ageMs / 1000).toStringAsFixed(1)}s';
+  }
+
+  List<String> _hostEventLines(FantasyWarsGameState fwState) {
+    if (fwState.recentEvents.isEmpty) {
+      return const ['No recent session events'];
+    }
+
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    return fwState.recentEvents
+        .take(10)
+        .map(
+          (event) =>
+              '${_formatDebugAge(nowMs - event.recordedAt)} ago | ${event.message}',
+        )
+        .toList(growable: false);
+  }
+
+  List<String> _hostDebugSystemLines({
+    required FantasyWarsGameState fwState,
+    required MapSessionState mapState,
+    required int nearbyEnemyCount,
+  }) {
+    final freshnessSeconds = (fwState.bleEvidenceFreshnessMs / 1000).round();
+    final freshContactCount = _freshBleContactCount(mapState);
+    return [
+      'Session | ${mapState.gameState.status}',
+      'Socket | ${mapState.isConnected ? 'connected' : 'disconnected'}',
+      'BLE | ${_hostDebugBleStatusText(mapState)}',
+      'Duel Mode | ${fwState.allowGpsFallbackWithoutBle ? 'GPS fallback allowed' : 'BLE required'}',
+      'Duel Range | ${fwState.duelRangeMeters}m / BLE window ${freshnessSeconds}s',
+      'Nearby Summary | enemies $nearbyEnemyCount / fresh contacts $freshContactCount',
+    ];
+  }
+
+  List<String> _hostDebugBleContactLines({
+    required FantasyWarsGameState fwState,
+    required MapSessionState mapState,
+    required Map<String, String> memberLabels,
+    required String? myId,
+    required int nowMs,
+  }) {
+    final contacts = mapState.bleContacts.values.toList()
+      ..sort((a, b) => b.seenAtMs.compareTo(a.seenAtMs));
+    if (contacts.isEmpty) {
+      return const ['No recent BLE contacts'];
+    }
+
+    return contacts.take(6).map((contact) {
+      final name =
+          memberLabels[contact.userId] ?? _memberLabel(mapState.members, contact.userId);
+      final ageMs = nowMs - contact.seenAtMs;
+      final freshnessLabel =
+          ageMs <= fwState.bleEvidenceFreshnessMs ? 'fresh' : 'stale';
+      final distance = _distanceToMember(contact.userId, mapState, myId);
+      final distanceLabel = distance != null && distance.isFinite
+          ? ' | ${distance.round()}m'
+          : '';
+      return '$name | ${contact.rssi} dBm | ${_formatDebugAge(ageMs)} ago$distanceLabel | $freshnessLabel';
+    }).toList(growable: false);
+  }
+
+  List<String> _hostDebugCandidateLines({
+    required FantasyWarsGameState fwState,
+    required MapSessionState mapState,
+    required Map<String, String> memberLabels,
+    required String? myId,
+    required int nowMs,
+  }) {
+    if (myId == null) {
+      return const ['Current user is unavailable'];
+    }
+
+    final enemyIds = _candidateMemberIds(
+      mapState: mapState,
+      fwState: fwState,
+      myId: myId,
+      enemy: true,
+      nearbyOnly: false,
+    );
+    if (enemyIds.isEmpty) {
+      return const ['No visible enemy candidates'];
+    }
+
+    return enemyIds.take(8).map((userId) {
+      final name = memberLabels[userId] ?? _memberLabel(mapState.members, userId);
+      final distance = _distanceToMember(userId, mapState, myId);
+      final distanceLabel = distance != null && distance.isFinite
+          ? '${distance.round()}m'
+          : 'unknown';
+      final proximity = _duelProximityForUser(userId, mapState, myId);
+      final status = _hostDebugCandidateStatus(
+        fwState: fwState,
+        mapState: mapState,
+        userId: userId,
+        distance: distance,
+        proximity: proximity,
+        nowMs: nowMs,
+      );
+      return '$name | $distanceLabel | $status';
+    }).toList(growable: false);
+  }
+
+  String _hostDebugCandidateStatus({
+    required FantasyWarsGameState fwState,
+    required MapSessionState mapState,
+    required String userId,
+    required double? distance,
+    required FwDuelProximityContext? proximity,
+    required int nowMs,
+  }) {
+    if (proximity?.source == 'ble') {
+      return proximity?.rssi == null
+          ? 'BLE ready'
+          : 'BLE ready (${proximity!.rssi} dBm)';
+    }
+    if (proximity?.source == 'gps_fallback') {
+      return 'GPS fallback ready';
+    }
+
+    final contact = mapState.bleContacts[userId];
+    if (contact != null) {
+      final ageMs = nowMs - contact.seenAtMs;
+      if (ageMs > fwState.bleEvidenceFreshnessMs) {
+        return 'BLE stale (${_formatDebugAge(ageMs)} ago)';
+      }
+    }
+    if (distance != null && distance.isFinite) {
+      if (distance <= fwState.duelRangeMeters) {
+        return fwState.allowGpsFallbackWithoutBle
+            ? 'GPS in range'
+            : 'in range | no BLE';
+      }
+      return 'out of range';
+    }
+    return 'unavailable';
+  }
+
+  String _hostDebugBleStatusText(MapSessionState mapState) {
+    return switch (mapState.blePresenceStatus) {
+      'running' => 'running',
+      'starting' => 'starting',
+      'requestingPermission' => 'requesting permission',
+      'permissionDenied' => 'permission denied',
+      'bluetoothUnavailable' =>
+        mapState.blePresenceMessage == null ||
+                mapState.blePresenceMessage!.isEmpty
+            ? 'bluetooth unavailable'
+            : mapState.blePresenceMessage!,
+      'error' => mapState.blePresenceMessage == null ||
+              mapState.blePresenceMessage!.isEmpty
+          ? 'error'
+          : mapState.blePresenceMessage!,
+      'unsupported' => 'unsupported',
+      _ => 'idle',
+    };
+  }
+
+  String _formatDebugAge(int ageMs) {
+    if (ageMs <= 0) {
+      return '0.0s';
+    }
+    if (ageMs >= 60000) {
+      final minutes = ageMs ~/ 60000;
+      final seconds = ((ageMs % 60000) / 1000).round();
+      return '${minutes}m ${seconds}s';
+    }
+    if (ageMs >= 10000) {
+      return '${(ageMs / 1000).round()}s';
+    }
+    return '${(ageMs / 1000).toStringAsFixed(1)}s';
+  }
+
+  String _resolveErrorLabel(String? code) {
+    if (code == 'BLE_PROXIMITY_REQUIRED') {
+      return _bleRequirementMessage(ref.read(mapSessionProvider(widget.sessionId)));
+    }
+    return _errorLabel(code);
+  }
+
   String _errorLabel(String? code) => switch (code) {
         'TARGET_OUT_OF_RANGE' => '대결 가능한 거리 밖입니다.',
+        'BLE_PROXIMITY_REQUIRED' => '근거리 감지가 확인되지 않았습니다. 상대와 더 가까워져 주세요.',
         'LOCATION_UNAVAILABLE' => '위치 정보를 아직 받지 못했습니다.',
         'LOCATION_STALE' => '위치 정보가 오래되었습니다.',
         'NOT_IN_CAPTURE_ZONE' => '거점 반경 안에서만 점령을 시작할 수 있습니다.',
@@ -2232,11 +3096,12 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     final nearestControlPointDistance = nearestControlPoint == null
         ? null
         : _distanceToControlPoint(nearestControlPoint, mapState, myId);
-    final enemyCandidateIds = _candidateMemberIds(
+    final duelCandidateIds = _candidateMemberIds(
       mapState: mapState,
       fwState: fwState,
       myId: myId,
       enemy: true,
+      nearbyOnly: true,
     );
 
     final canShowCapture = fwState.myState.isAlive &&
@@ -2255,8 +3120,8 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
     final duelLabel = fwState.myState.isAlive &&
             !fwState.myState.inDuel &&
             fwState.duel.phase == 'idle' &&
-            enemyCandidateIds.isNotEmpty
-        ? '대결 요청'
+            duelCandidateIds.isNotEmpty
+        ? '근접 결투'
         : null;
     final dungeonLabel = !fwState.myState.isAlive
         ? (fwState.myState.dungeonEntered
@@ -2268,6 +3133,7 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
       for (final entry in mapState.members.entries)
         entry.key: entry.value.nickname,
     };
+    final isHost = mapState.myRole == 'host';
 
     return PopScope(
       canPop: false,
@@ -2339,22 +3205,54 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
                     myState: fwState.myState,
                     dungeons: fwState.dungeons,
                     memberLabels: memberLabels,
+                    bleSummary: _bleSummary(mapState, duelCandidateIds.length),
+                    duelDebugLines: _duelDebugLines(fwState),
                   ),
                   Positioned(
                     top: MediaQuery.of(context).padding.top + 8,
                     right: 12,
                     child: SafeArea(
-                      child: TextButton(
-                        onPressed: _confirmLeave,
-                        style: TextButton.styleFrom(
-                          backgroundColor: Colors.black54,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 6,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          if (isHost) ...[
+                            TextButton.icon(
+                              onPressed: () => unawaited(_openHostDebugSheet(
+                                fwState: fwState,
+                                mapState: mapState,
+                                memberLabels: memberLabels,
+                                duelCandidateIds: duelCandidateIds,
+                                myId: myId,
+                              )),
+                              style: TextButton.styleFrom(
+                                backgroundColor: const Color(0xCC0F766E),
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 6,
+                                ),
+                              ),
+                              icon: const Icon(
+                                Icons.admin_panel_settings_rounded,
+                                size: 18,
+                              ),
+                              label: const Text('Log'),
+                            ),
+                            const SizedBox(height: 8),
+                          ],
+                          TextButton(
+                            onPressed: _confirmLeave,
+                            style: TextButton.styleFrom(
+                              backgroundColor: Colors.black54,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
+                            ),
+                            child: const Text('나가기'),
                           ),
-                        ),
-                        child: const Text('나가기'),
+                        ],
                       ),
                     ),
                   ),
@@ -2406,7 +3304,17 @@ class _FantasyWarsGameScreenState extends ConsumerState<FantasyWarsGameScreen> {
                         return ref
                             .read(
                                 fantasyWarsProvider(widget.sessionId).notifier)
-                            .acceptDuel(fwState.duel.duelId!);
+                            .acceptDuel(
+                              fwState.duel.duelId!,
+                              proximity: fwState.duel.opponentId == null
+                                  ? null
+                                  : _duelProximityForUser(
+                                          fwState.duel.opponentId!,
+                                          mapState,
+                                          myId,
+                                        )
+                                      ?.toMap(),
+                            );
                       })),
                       onReject: () => unawaited(_runAck(() {
                         return ref
@@ -2612,6 +3520,561 @@ class _ChoiceBadge extends StatelessWidget {
           fontSize: 11,
           fontWeight: FontWeight.w700,
         ),
+      ),
+    );
+  }
+}
+
+class _HostEventSection extends StatefulWidget {
+  const _HostEventSection({
+    required this.title,
+    required this.events,
+    this.onEventTap,
+    this.onEventInspectTap,
+  });
+
+  final String title;
+  final List<FwRecentEvent> events;
+  final ValueChanged<FwRecentEvent>? onEventTap;
+  final ValueChanged<FwRecentEvent>? onEventInspectTap;
+
+  @override
+  State<_HostEventSection> createState() => _HostEventSectionState();
+}
+
+class _HostEventSectionState extends State<_HostEventSection> {
+  String _selectedKind = 'all';
+  String _searchQuery = '';
+  String? _pinnedEventKey;
+  late final TextEditingController _searchController;
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController = TextEditingController();
+  }
+
+  @override
+  void didUpdateWidget(covariant _HostEventSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final availableKinds = _availableKinds();
+    if (!availableKinds.contains(_selectedKind)) {
+      _selectedKind = 'all';
+    }
+    if (_pinnedEventKey != null &&
+        !widget.events.any((event) => _eventKey(event) == _pinnedEventKey)) {
+      _pinnedEventKey = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final availableKinds = _availableKinds();
+    final pinnedEvent = _pinnedEvent();
+    final visibleEvents = _filteredEvents(
+      excludeEventKey:
+          pinnedEvent == null ? null : _eventKey(pinnedEvent),
+    );
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            widget.title,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _HostEventSearchBar(
+            controller: _searchController,
+            onChanged: (value) {
+              setState(() {
+                _searchQuery = value;
+              });
+            },
+            onClear: _searchQuery.isEmpty
+                ? null
+                : () {
+                    _searchController.clear();
+                    setState(() {
+                      _searchQuery = '';
+                    });
+                  },
+          ),
+          const SizedBox(height: 12),
+          if (availableKinds.length > 1) ...[
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final kind in availableKinds)
+                  ChoiceChip(
+                    label: Text(_kindFilterLabel(kind)),
+                    selected: _selectedKind == kind,
+                    onSelected: (_) {
+                      setState(() {
+                        _selectedKind = kind;
+                      });
+                    },
+                    labelStyle: TextStyle(
+                      color: _selectedKind == kind
+                          ? _kindColor(kind)
+                          : Colors.white70,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    backgroundColor: Colors.white.withValues(alpha: 0.04),
+                    selectedColor: _kindColor(kind).withValues(alpha: 0.18),
+                    side: BorderSide(
+                      color: _selectedKind == kind
+                          ? _kindColor(kind).withValues(alpha: 0.8)
+                          : Colors.white12,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (pinnedEvent != null) ...[
+            Row(
+              children: [
+                const Text(
+                  'Pinned',
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _pinnedEventKey = null;
+                    });
+                  },
+                  style: TextButton.styleFrom(
+                    foregroundColor: _kindColor(pinnedEvent.kind),
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(0, 0),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text(
+                    'Clear',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            _HostEventRow(
+              event: pinnedEvent,
+              color: _kindColor(pinnedEvent.kind),
+              badgeLabel: _kindBadgeLabel(pinnedEvent.kind),
+              onTap: pinnedEvent.hasFocusTarget && widget.onEventTap != null
+                  ? () => widget.onEventTap!(pinnedEvent)
+                  : null,
+              onInspectTap:
+                  pinnedEvent.hasFocusTarget && widget.onEventInspectTap != null
+                      ? () => widget.onEventInspectTap!(pinnedEvent)
+                      : null,
+              onPinToggle: () => _togglePinned(pinnedEvent),
+              isPinned: true,
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (visibleEvents.isEmpty)
+            const Text(
+              'No events match the current filter',
+              style: TextStyle(color: Colors.white60, fontSize: 12),
+            )
+          else
+            for (var index = 0; index < visibleEvents.length; index++) ...[
+              _HostEventRow(
+                event: visibleEvents[index],
+                color: _kindColor(visibleEvents[index].kind),
+                badgeLabel: _kindBadgeLabel(visibleEvents[index].kind),
+                onTap: visibleEvents[index].hasFocusTarget &&
+                        widget.onEventTap != null
+                    ? () => widget.onEventTap!(visibleEvents[index])
+                    : null,
+                onInspectTap: visibleEvents[index].hasFocusTarget &&
+                        widget.onEventInspectTap != null
+                    ? () => widget.onEventInspectTap!(visibleEvents[index])
+                    : null,
+                onPinToggle: () => _togglePinned(visibleEvents[index]),
+                isPinned: _eventKey(visibleEvents[index]) == _pinnedEventKey,
+              ),
+              if (index != visibleEvents.length - 1) const SizedBox(height: 8),
+            ],
+        ],
+      ),
+    );
+  }
+
+  List<String> _availableKinds() {
+    final orderedKinds = <String>['all'];
+    for (final event in widget.events) {
+      if (!orderedKinds.contains(event.kind)) {
+        orderedKinds.add(event.kind);
+      }
+    }
+    return orderedKinds;
+  }
+
+  List<FwRecentEvent> _filteredEvents({
+    String? excludeEventKey,
+  }) {
+    final normalizedQuery = _searchQuery.trim().toLowerCase();
+    final filtered = widget.events.where((event) {
+      if (_selectedKind != 'all' && event.kind != _selectedKind) {
+        return false;
+      }
+      if (excludeEventKey != null && _eventKey(event) == excludeEventKey) {
+        return false;
+      }
+      if (normalizedQuery.isEmpty) {
+        return true;
+      }
+      final haystack = '${event.kind} ${event.message}'.toLowerCase();
+      return haystack.contains(normalizedQuery);
+    });
+    return filtered.take(10).toList(growable: false);
+  }
+
+  FwRecentEvent? _pinnedEvent() {
+    final pinnedEventKey = _pinnedEventKey;
+    if (pinnedEventKey == null) {
+      return null;
+    }
+    for (final event in widget.events) {
+      if (_eventKey(event) == pinnedEventKey) {
+        return event;
+      }
+    }
+    return null;
+  }
+
+  void _togglePinned(FwRecentEvent event) {
+    final key = _eventKey(event);
+    setState(() {
+      _pinnedEventKey = _pinnedEventKey == key ? null : key;
+    });
+  }
+
+  String _eventKey(FwRecentEvent event) {
+    return [
+      event.recordedAt,
+      event.kind,
+      event.message,
+      event.primaryUserId ?? '',
+      event.secondaryUserId ?? '',
+      event.controlPointId ?? '',
+    ].join('|');
+  }
+
+  String _kindFilterLabel(String kind) => switch (kind) {
+        'all' => 'All',
+        'duel' => 'Duel',
+        'capture' => 'Capture',
+        'skill' => 'Skill',
+        'combat' => 'Combat',
+        'revive' => 'Revive',
+        'match' => 'Match',
+        _ => kind,
+      };
+
+  String _kindBadgeLabel(String kind) => switch (kind) {
+        'duel' => 'DUEL',
+        'capture' => 'CAP',
+        'skill' => 'SKILL',
+        'combat' => 'COMBAT',
+        'revive' => 'REVIVE',
+        'match' => 'MATCH',
+        _ => kind.toUpperCase(),
+      };
+
+  Color _kindColor(String kind) => switch (kind) {
+        'duel' => const Color(0xFFF97316),
+        'capture' => const Color(0xFF14B8A6),
+        'skill' => const Color(0xFF818CF8),
+        'combat' => const Color(0xFFEF4444),
+        'revive' => const Color(0xFF22C55E),
+        'match' => const Color(0xFFFACC15),
+        _ => Colors.white70,
+      };
+}
+
+class _HostEventSearchBar extends StatelessWidget {
+  const _HostEventSearchBar({
+    required this.controller,
+    required this.onChanged,
+    this.onClear,
+  });
+
+  final TextEditingController controller;
+  final ValueChanged<String> onChanged;
+  final VoidCallback? onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      onChanged: onChanged,
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+      ),
+      decoration: InputDecoration(
+        isDense: true,
+        filled: true,
+        fillColor: Colors.black.withValues(alpha: 0.18),
+        hintText: 'Search events',
+        hintStyle: const TextStyle(color: Colors.white38, fontSize: 12),
+        prefixIcon: const Icon(
+          Icons.search_rounded,
+          size: 18,
+          color: Colors.white54,
+        ),
+        suffixIcon: onClear == null
+            ? null
+            : IconButton(
+                onPressed: onClear,
+                icon: const Icon(
+                  Icons.close_rounded,
+                  size: 18,
+                  color: Colors.white54,
+                ),
+                splashRadius: 18,
+              ),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Colors.white12),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFF5EEAD4)),
+        ),
+      ),
+    );
+  }
+}
+
+class _HostEventRow extends StatelessWidget {
+  const _HostEventRow({
+    required this.event,
+    required this.color,
+    required this.badgeLabel,
+    this.onTap,
+    this.onInspectTap,
+    this.onPinToggle,
+    this.isPinned = false,
+  });
+
+  final FwRecentEvent event;
+  final Color color;
+  final String badgeLabel;
+  final VoidCallback? onTap;
+  final VoidCallback? onInspectTap;
+  final VoidCallback? onPinToggle;
+  final bool isPinned;
+
+  @override
+  Widget build(BuildContext context) {
+    final ageMs = DateTime.now().millisecondsSinceEpoch - event.recordedAt;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.18),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: color.withValues(alpha: 0.28)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _ChoiceBadge(
+                    label: badgeLabel,
+                    color: color,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      event.message,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  if (onTap != null) ...[
+                    const SizedBox(width: 8),
+                    Icon(
+                      Icons.my_location_rounded,
+                      size: 16,
+                      color: color.withValues(alpha: 0.9),
+                    ),
+                  ],
+                  if (onInspectTap != null) ...[
+                    const SizedBox(width: 4),
+                    IconButton(
+                      onPressed: onInspectTap,
+                      padding: EdgeInsets.zero,
+                      constraints:
+                          const BoxConstraints(minWidth: 24, minHeight: 24),
+                      splashRadius: 18,
+                      icon: Icon(
+                        Icons.open_in_new_rounded,
+                        size: 16,
+                        color: color.withValues(alpha: 0.95),
+                      ),
+                      tooltip: 'Open details',
+                    ),
+                  ],
+                  if (onPinToggle != null) ...[
+                    const SizedBox(width: 4),
+                    IconButton(
+                      onPressed: onPinToggle,
+                      padding: EdgeInsets.zero,
+                      constraints:
+                          const BoxConstraints(minWidth: 24, minHeight: 24),
+                      splashRadius: 18,
+                      icon: Icon(
+                        isPinned
+                            ? Icons.push_pin_rounded
+                            : Icons.push_pin_outlined,
+                        size: 16,
+                        color: isPinned
+                            ? const Color(0xFFFDE68A)
+                            : Colors.white54,
+                      ),
+                      tooltip: isPinned ? 'Unpin event' : 'Pin event',
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Text(
+                    '${_formatAge(ageMs)} ago',
+                    style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 11,
+                    ),
+                  ),
+                  if (onTap != null) ...[
+                    const Spacer(),
+                    Text(
+                      isPinned ? 'Pinned' : 'Tap to focus',
+                      style: TextStyle(
+                        color: isPinned
+                            ? const Color(0xFFFDE68A)
+                            : color.withValues(alpha: 0.9),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _formatAge(int ageMs) {
+    if (ageMs <= 0) {
+      return '0.0s';
+    }
+    if (ageMs >= 60000) {
+      final minutes = ageMs ~/ 60000;
+      final seconds = ((ageMs % 60000) / 1000).round();
+      return '${minutes}m ${seconds}s';
+    }
+    if (ageMs >= 10000) {
+      return '${(ageMs / 1000).round()}s';
+    }
+    return '${(ageMs / 1000).toStringAsFixed(1)}s';
+  }
+}
+
+class _HostDebugSection extends StatelessWidget {
+  const _HostDebugSection({
+    required this.title,
+    required this.lines,
+  });
+
+  final String title;
+  final List<String> lines;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          for (var index = 0; index < lines.length; index++) ...[
+            Text(
+              lines[index],
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 12,
+              ),
+            ),
+            if (index != lines.length - 1) const SizedBox(height: 6),
+          ],
+        ],
       ),
     );
   }
